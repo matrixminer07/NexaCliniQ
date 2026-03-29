@@ -1,0 +1,1 @@
+export { TornadoChart } from './TornadoChart';

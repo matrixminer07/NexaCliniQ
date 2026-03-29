@@ -1,0 +1,10 @@
+{
+  "include": [
+    "app.py",
+    "backend"
+  ],
+  "extraPaths": [
+    "backend"
+  ],
+  "reportMissingImports": "warning"
+}

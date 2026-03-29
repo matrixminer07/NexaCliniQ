@@ -1,0 +1,173 @@
+/* GlossaryTooltip Styles */
+
+.glossary-tooltip-wrapper {
+  position: relative;
+  display: inline;
+}
+
+.glossary-tooltip-trigger {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: help;
+  border-bottom: 1px dashed currentColor;
+  outline: none;
+  transition: color 0.2s ease;
+}
+
+.glossary-tooltip-trigger:hover,
+.glossary-tooltip-trigger:focus {
+  color: var(--color-primary, #18a07d);
+}
+
+.glossary-tooltip-trigger:focus {
+  outline: 2px solid var(--color-primary, #18a07d);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+.glossary-info-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+/* Tooltip Box */
+.glossary-tooltip {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 50;
+  background: white;
+  border: 0.5px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 12px 14px;
+  max-width: 280px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #1f2937;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  word-wrap: break-word;
+  white-space: normal;
+}
+
+/* Position variants */
+.glossary-tooltip-above {
+  bottom: calc(100% + 12px);
+}
+
+.glossary-tooltip-below {
+  top: calc(100% + 12px);
+}
+
+/* Arrow pointer */
+.glossary-tooltip::before {
+  content: '';
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  background: white;
+  border: 0.5px solid #e5e7eb;
+  transform: rotate(45deg);
+  left: 50%;
+  transform-origin: center;
+}
+
+.glossary-tooltip-above::before {
+  bottom: -4px;
+  left: calc(50% - 3px);
+  border-top: none;
+  border-left: none;
+}
+
+.glossary-tooltip-below::before {
+  top: -4px;
+  left: calc(50% - 3px);
+  border-bottom: none;
+  border-right: none;
+}
+
+/* Tooltip Content */
+.glossary-tooltip-header {
+  margin-bottom: 8px;
+  color: #111827;
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.glossary-tooltip-body {
+  margin-bottom: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #4b5563;
+}
+
+.glossary-tooltip-footer {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #f0f0f0;
+}
+
+.glossary-learn-more {
+  color: var(--color-primary, #18a07d);
+  text-decoration: none;
+  font-size: 11px;
+  font-weight: 500;
+  transition: color 0.2s ease;
+}
+
+.glossary-learn-more:hover,
+.glossary-learn-more:focus {
+  color: var(--color-primary-dark, #0f6d5c);
+  text-decoration: underline;
+}
+
+/* Mobile / Touch adjustments */
+@media (max-width: 640px) {
+  .glossary-tooltip {
+    max-width: calc(100vw - 32px);
+    font-size: 12px;
+  }
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  .glossary-tooltip-trigger {
+    transition: none;
+  }
+
+  .glossary-learn-more {
+    transition: none;
+  }
+}
+
+/* Dark mode support (if implemented) */
+@media (prefers-color-scheme: dark) {
+  .glossary-tooltip {
+    background: #1f2937;
+    border-color: #374151;
+    color: #e5e7eb;
+  }
+
+  .glossary-tooltip::before {
+    background: #1f2937;
+    border-color: #374151;
+  }
+
+  .glossary-tooltip-header {
+    color: #f3f4f6;
+  }
+
+  .glossary-tooltip-body {
+    color: #d1d5db;
+  }
+
+  .glossary-tooltip-footer {
+    border-top-color: #374151;
+  }
+}

@@ -1,0 +1,109 @@
+/* Skeleton Loading Animations */
+
+@keyframes skeletonPulse {
+  0%, 100% {
+    opacity: 0.6;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
+/* Base Skeleton Styles */
+.skeleton-card,
+.skeleton-line,
+.skeleton-table-cell,
+.skeleton-chart,
+.skeleton-bar {
+  background: var(--color-background-secondary, #f0f0f0);
+  border-radius: 8px;
+  animation: skeletonPulse 1.5s ease-in-out infinite;
+}
+
+/* Card Skeleton */
+.skeleton-card {
+  display: block;
+  margin-bottom: 16px;
+  min-height: 60px;
+}
+
+/* Text Skeleton */
+.skeleton-text {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.skeleton-line {
+  display: block;
+  height: 16px;
+  width: 100%;
+}
+
+/* Table Skeleton */
+.skeleton-table {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.skeleton-table-row {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  padding: 12px;
+  background: rgba(0, 0, 0, 0.02);
+  border-radius: 6px;
+}
+
+.skeleton-table-cell {
+  flex: 1;
+  height: 20px;
+  min-height: 20px;
+}
+
+/* Chart Skeleton */
+.skeleton-chart {
+  display: block;
+  margin: 16px 0;
+}
+
+/* Bar Chart Skeleton */
+.skeleton-bar-chart {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-around;
+  padding: 20px;
+  gap: 12px;
+}
+
+.skeleton-bar {
+  flex: 1;
+  min-width: 30px;
+  background: var(--color-background-secondary, #e5e7eb);
+  border-radius: 4px;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .skeleton-table-row {
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .skeleton-table-cell {
+    width: 100% !important;
+  }
+}
+
+/* Reduced motion preference */
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-card,
+  .skeleton-line,
+  .skeleton-table-cell,
+  .skeleton-chart,
+  .skeleton-bar {
+    animation: none;
+    opacity: 0.6;
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "test_accuracy": 1.0,
+  "test_auc": 1.0,
+  "test_precision": 1.0,
+  "test_recall": 1.0,
+  "test_f1": 1.0,
+  "cv_auc_mean": 1.0,
+  "cv_auc_std": 0.0,
+  "n_train": 126,
+  "n_test": 32,
+  "pos_rate": 0.329,
+  "data_source": "ChEMBL",
+  "trained_at": "2026-03-21T07:43:30.564617"
+}
