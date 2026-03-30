@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { api } from '@/services/api'
 import { useAppStore } from '@/store'
 import { CardSkeleton } from '@/components/skeletons/CardSkeleton'
@@ -13,7 +13,7 @@ export function ScenariosTab() {
   const [error, setError] = useState<string | null>(null)
   const cache = useTabCache<Scenario[]>()
 
-  const load = async (force = false) => {
+  const load = useCallback(async (force = false) => {
     if (!force) {
       const cached = cache.get('scenarios-tab')
       if (cached) {
@@ -36,11 +36,11 @@ export function ScenariosTab() {
     } finally {
       setLoading(false)
     }
-  }
+  }, [cache])
 
   useEffect(() => {
     void load(false)
-  }, [])
+  }, [load])
 
   const onDelete = async (id: string) => {
     try {

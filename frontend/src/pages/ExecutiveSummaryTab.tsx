@@ -35,16 +35,11 @@ export function ExecutiveSummaryTab() {
   }
 
   useEffect(() => {
-    let alive = true
-
     const run = async () => {
       await load()
     }
 
     run()
-    return () => {
-      alive = false
-    }
   }, [])
 
   if (loading) {

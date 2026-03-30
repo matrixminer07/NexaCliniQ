@@ -26,7 +26,6 @@ export function generateRationale(
     return `${compoundName || 'This compound'} has a success probability of ${(score * 100).toFixed(1)}% based on the analyzed features.`
   }
 
-  const parts: string[] = []
   const prefix = `${compoundName || 'This compound'} scores ${(score * 100).toFixed(1)}% primarily due to`
 
   // Build reason from top contributors

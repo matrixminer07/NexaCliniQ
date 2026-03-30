@@ -1,0 +1,40 @@
+# VCS
+.git
+.gitignore
+
+# Python
+.venv/
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+.pytest_cache/
+.mypy_cache/
+
+# Node
+frontend/node_modules/
+frontend/dist/
+node-backend/node_modules/
+
+# Local artifacts
+logs/
+*.log
+*.sqlite
+*.db
+
+# IDE and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Large local-only assets and docs not needed for image builds
+monitoring/
+chembl_cache/
+chembl_dataset.csv
+AUTH_IMPLEMENTATION_COMPLETE.md
+BLUEPRINT_REFACTORING_GUIDE.md
+DATASET_GUIDE.md
+GOOGLE_OAUTH_SETUP.md
+IMPLEMENTATION_GUIDE.md
+QUICK_CODE_SNIPPETS.md

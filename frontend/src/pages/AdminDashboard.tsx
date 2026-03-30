@@ -424,7 +424,7 @@ export function AdminDashboard() {
   const refreshCountdown = useMemo(() => {
     const elapsedSec = Math.floor((Date.now() - lastHealthAt) / 1000)
     return Math.max(0, 30 - elapsedSec)
-  }, [lastHealthAt, loading.overview])
+  }, [lastHealthAt])
 
   async function handleUpdateRole(id: string, role: AdminUser['role']) {
     try {

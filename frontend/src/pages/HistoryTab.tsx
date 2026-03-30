@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import axios from 'axios'
 import { useNavigate } from 'react-router-dom'
 import { api } from '@/services/api'
@@ -16,7 +16,7 @@ export function HistoryTab() {
   const [error, setError] = useState<string | null>(null)
   const cache = useTabCache<HistoryRecord[]>()
 
-  const load = async (force = false) => {
+  const load = useCallback(async (force = false) => {
     if (!force) {
       const cached = cache.get('history-tab')
       if (cached) {
@@ -44,7 +44,7 @@ export function HistoryTab() {
     } finally {
       setLoading(false)
     }
-  }
+  }, [cache, logout, navigate])
 
   useEffect(() => {
     const run = async () => {
@@ -56,7 +56,7 @@ export function HistoryTab() {
     }
 
     run()
-  }, [logout, navigate])
+  }, [load])
 
   const filtered = useMemo(() => rows.filter((r) => r.compound_name.toLowerCase().includes(query.toLowerCase())), [rows, query])
 
