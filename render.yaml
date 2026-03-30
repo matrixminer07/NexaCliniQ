@@ -4,11 +4,6 @@ databases:
     databaseName: pharmanexus
     user: pharma
 
-redis:
-  - name: pharmanexus-redis
-    plan: starter
-    ipAllowList: []
-
 services:
   - type: web
     name: pharmanexus-api
@@ -32,20 +27,11 @@ services:
           name: pharmanexus-postgres
           property: connectionString
       - key: REDIS_URL
-        fromService:
-          type: redis
-          name: pharmanexus-redis
-          property: connectionString
+        sync: false
       - key: CELERY_BROKER
-        fromService:
-          type: redis
-          name: pharmanexus-redis
-          property: connectionString
+        sync: false
       - key: SOCKETIO_MESSAGE_QUEUE
-        fromService:
-          type: redis
-          name: pharmanexus-redis
-          property: connectionString
+        sync: false
       - key: SECRET_KEY
         generateValue: true
       - key: JWT_SECRET_KEY
@@ -82,20 +68,11 @@ services:
           name: pharmanexus-postgres
           property: connectionString
       - key: REDIS_URL
-        fromService:
-          type: redis
-          name: pharmanexus-redis
-          property: connectionString
+        sync: false
       - key: CELERY_BROKER
-        fromService:
-          type: redis
-          name: pharmanexus-redis
-          property: connectionString
+        sync: false
       - key: SOCKETIO_MESSAGE_QUEUE
-        fromService:
-          type: redis
-          name: pharmanexus-redis
-          property: connectionString
+        sync: false
       - key: SECRET_KEY
         sync: false
       - key: JWT_SECRET_KEY
@@ -130,20 +107,11 @@ services:
           name: pharmanexus-postgres
           property: connectionString
       - key: REDIS_URL
-        fromService:
-          type: redis
-          name: pharmanexus-redis
-          property: connectionString
+        sync: false
       - key: CELERY_BROKER
-        fromService:
-          type: redis
-          name: pharmanexus-redis
-          property: connectionString
+        sync: false
       - key: SOCKETIO_MESSAGE_QUEUE
-        fromService:
-          type: redis
-          name: pharmanexus-redis
-          property: connectionString
+        sync: false
       - key: SECRET_KEY
         sync: false
       - key: JWT_SECRET_KEY
