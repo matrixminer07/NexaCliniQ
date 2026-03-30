@@ -3609,4 +3609,6 @@ if __name__ == "__main__":
     print("🚀 Starting NovaCura Drug Discovery API...")
     print(f"📊 Model status: {'✅ Loaded' if model else '❌ Not loaded'}")
     print(f"🔗 Ensemble status: {'✅ Loaded' if ensemble else '❌ Not loaded'}")
-    socketio.run(app, debug=True, port=5000, host="0.0.0.0", use_reloader=False)
+    port = int(os.getenv("PORT", "5000"))
+    debug_mode = str(os.getenv("DEBUG", "false")).strip().lower() == "true"
+    socketio.run(app, debug=debug_mode, port=port, host="0.0.0.0", use_reloader=False)
