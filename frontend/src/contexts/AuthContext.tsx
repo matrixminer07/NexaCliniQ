@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useState } from 'react'
 import { api } from '@/services/api'
-import { AuthUser, clearAuthSession, getAuthToken, getAuthenticatedUser, setAccessToken, setAuthSession } from '@/auth'
+import { AuthUser, clearAuthSession, getAuthToken, getAuthenticatedUser, getRefreshToken, setAccessToken, setAuthSession } from '@/auth'
 
 type AuthContextValue = {
   user: AuthUser | null
@@ -23,6 +23,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     async function rehydrate() {
       try {
+        // Only attempt refresh if we have a token in storage
+        const existingToken = getAuthToken()
+        const existingRefreshToken = getRefreshToken()
+        if (!existingToken && !existingRefreshToken) {
+          if (mounted) setLoading(false)
+          return
+        }
+
         const refreshed = await api.refreshAccessToken()
         setAccessToken(refreshed.access_token)
         const me = await api.me()
@@ -34,7 +42,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           picture: me.picture,
           role: me.role,
         }
-        setAuthSession(refreshed.access_token, nextUser)
+        setAuthSession(refreshed.access_token, nextUser, existingRefreshToken)
         setUser(nextUser)
         setToken(refreshed.access_token)
       } catch {

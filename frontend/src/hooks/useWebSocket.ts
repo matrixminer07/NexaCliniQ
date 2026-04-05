@@ -1,12 +1,14 @@
 import { useEffect, useState } from 'react';
 import { io } from 'socket.io-client';
 
+const SOCKET_URL = 'http://127.0.0.1:5000';
+
 const useWebSocket = () => {
   const [socket, setSocket] = useState<any>(null);
   const [connected, setConnected] = useState(false);
 
   useEffect(() => {
-    const socketInstance = io('http://localhost:5000', {
+    const socketInstance = io(SOCKET_URL, {
       transports: ['websocket'],
       upgrade: true,
     });

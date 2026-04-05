@@ -49,7 +49,7 @@ In Render logs:
 After API is healthy:
 
 1. Deploy frontend to Vercel from `frontend/` root.
-2. Set `VITE_API_BASE_URL=https://YOUR-API.onrender.com`.
+2. Set `VITE_API_URL=https://YOUR-API.onrender.com`.
 3. Re-run:
 
 ```powershell

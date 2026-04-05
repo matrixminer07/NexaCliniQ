@@ -3,6 +3,7 @@ import { useSocket } from '../../hooks/useSocket';
 import { useFinancialStore } from '../../store/financialStore';
 import { Card } from 'antd';
 import * as d3 from 'd3';
+import { formatMillions } from '@/utils/numberFormat';
 
 interface TornadoBar {
   label: string;
@@ -45,7 +46,7 @@ export const TornadoChart: React.FC = () => {
       .domain([-maxAbsSwing * 1.1, maxAbsSwing * 1.1])
       .range([margin.left, width - margin.right]);
 
-    const moneyTickFormat = (value: d3.NumberValue): string => `₹${Number(value)}M`;
+    const moneyTickFormat = (value: d3.NumberValue): string => formatMillions(Number(value), 0);
 
     svg.append("g")
       .attr("transform", `translate(0,${height - margin.bottom})`)

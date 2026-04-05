@@ -10,6 +10,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt gunicorn eventlet
 
+# Explicitly install google-auth for Google ID token verification.
+RUN pip install --no-cache-dir google-auth
+
 # Copy application code
 COPY . .
 

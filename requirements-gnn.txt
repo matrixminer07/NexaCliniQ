@@ -1,0 +1,7 @@
+# Optional dependencies for AttentiveFP GNN molecular inference
+# Install with: pip install -r requirements-gnn.txt
+
+torch
+torch-geometric
+rdkit-pypi
+deepchem

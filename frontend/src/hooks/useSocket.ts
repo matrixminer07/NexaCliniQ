@@ -2,7 +2,7 @@
 import { useEffect, useRef, useCallback } from "react";
 import { io, Socket } from "socket.io-client";
 
-const SOCKET_URL = import.meta.env.VITE_API_URL ?? "http://localhost:5000";
+const SOCKET_URL = (import.meta.env.VITE_API_URL as string | undefined)?.replace('localhost', '127.0.0.1') ?? "http://127.0.0.1:5000";
 
 export function useSocket() {
   const socketRef = useRef<Socket | null>(null);

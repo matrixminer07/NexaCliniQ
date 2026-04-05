@@ -510,13 +510,14 @@ export function LandingPage() {
             <ProgressRing label="Scientific Feasibility" value={85} />
             <ProgressRing label="Market Readiness" value={85} />
           </div>
-          <div className="mt-8 pn-glass rounded-2xl p-5 h-48">
+          <div className="mt-8 pn-glass rounded-2xl p-6">
             <p className="text-sm text-[#8ba8c4] mb-3">Readiness Trajectory</p>
             {!trendData || trendData.length === 0 ? (
-              <div className="h-[300px] flex items-center justify-center text-[#8ba8c4]">No data available</div>
+              <div className="h-[260px] flex items-center justify-center text-[#8ba8c4]">No data available</div>
             ) : (
-            <ResponsiveContainer width="100%" height={300}>
-              <AreaChart data={trendData} margin={{ top: 10, right: 0, left: -20, bottom: 0 }}>
+            <div className="h-[260px] w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={trendData} margin={{ top: 10, right: 12, left: 0, bottom: 0 }}>
                 <defs>
                   <linearGradient id="feasibility" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="5%" stopColor="#00c2ff" stopOpacity={0.4} />
@@ -528,8 +529,9 @@ export function LandingPage() {
                 <YAxis tick={{ fill: '#8ba8c4', fontSize: 11 }} axisLine={false} tickLine={false} />
                 <Tooltip contentStyle={{ background: '#0b1e3d', border: '1px solid rgba(255,255,255,0.1)' }} />
                 <Area type="monotone" dataKey="feasibility" stroke="#00c2ff" fill="url(#feasibility)" />
-              </AreaChart>
-            </ResponsiveContainer>
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
             )}
           </div>
         </div>

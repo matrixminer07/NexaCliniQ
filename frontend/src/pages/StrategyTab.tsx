@@ -13,7 +13,7 @@ export function StrategyTab() {
       <Card>
         <Typography.Title level={4} style={{ marginBottom: 8 }}>Strategy Comparison Dashboard</Typography.Title>
         <Typography.Paragraph style={{ marginBottom: 0 }}>
-          NexaClinIQ should prioritize Strategy A for strongest combined scientific defensibility, time-to-market, and ROI within the 5-year, ₹500M constraint.
+          NexaClinIQ should prioritize Strategy A for strongest combined scientific defensibility, time-to-market, and ROI within the 5-year, $500M constraint.
         </Typography.Paragraph>
       </Card>
 
@@ -74,7 +74,7 @@ export function StrategyTab() {
           </div>
           <div className="p-3 rounded-xl bg-surface-1 border border-white/10">
             <div className="text-ink-secondary">Capital efficiency</div>
-            <div className="font-semibold">High upside within ₹500M ceiling</div>
+            <div className="font-semibold">High upside within $500M ceiling</div>
           </div>
           <div className="p-3 rounded-xl bg-surface-1 border border-white/10">
             <div className="text-ink-secondary">Defensibility</div>

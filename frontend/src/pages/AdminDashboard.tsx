@@ -446,7 +446,7 @@ export function AdminDashboard() {
     }
   }
 
-  if (user?.role !== 'admin') {
+  if (String(user?.role ?? '').toLowerCase() !== 'admin') {
     return <Navigate to="/" replace />
   }
 

@@ -44,7 +44,7 @@ export const NPVDashboard: React.FC = () => {
             <p className="text-slate-300 text-[10px] font-black uppercase tracking-[0.2em] mb-3 opacity-80">Projected NPV</p>
             <div className="leading-none break-words">
               <span className="font-black text-transparent bg-clip-text bg-gradient-to-r from-emerald-300 to-teal-500 drop-shadow-sm text-[clamp(2.2rem,7vw,4.2rem)]">
-                {new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(Number(ai.npv))}
+                {new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(Number(ai.npv))}
               </span>
               <span className="ml-2 align-baseline font-extrabold text-emerald-400/90 text-[clamp(1.1rem,2.8vw,1.9rem)]">M</span>
             </div>

@@ -1,509 +1,520 @@
+# pyright: reportMissingImports=false, reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportGeneralTypeIssues=false
 """
-UPGRADE 8: Graph Neural Network (GNN) Model
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Replaces tabular Random Forest with a PyTorch Geometric GNN that reads
-molecular graphs directly from SMILES strings.
+AttentiveFP molecular property predictor.
 
-Atoms = nodes, bonds = edges. The GNN learns chemical patterns directly
-from molecular topology — same class of AI used by Isomorphic Labs
-(DeepMind's drug discovery spin-out) and Recursion Pharmaceuticals.
+This module is a drop-in replacement for the previous joblib-oriented GNN helper.
+It preserves legacy function names used across the API layer:
+- load_gnn_model
+- predict_gnn
+- train_gnn
 
-Architecture: Message Passing Neural Network (MPNN)
-  Input: Atom features (atomic number, degree, formal charge, aromaticity, ...)
-  Layers: 3× GINConv (Graph Isomorphism Network)
-  Readout: Global mean + max pooling
-  Output: Binary classification (active/inactive)
-
-Install:
-  pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
-  pip install torch_geometric
-  pip install rdkit-pypi
+Optional dependencies:
+  pip install torch torch-geometric rdkit-pypi
 """
 
-import numpy as np
-import json
+from __future__ import annotations
+
+import logging
 import os
 from datetime import datetime
+from typing import Dict, List, Optional
+
+import numpy as np
+
+logger = logging.getLogger(__name__)
 
 GNN_MODEL_PATH = "gnn_model.pt"
 
-# ── Try importing PyTorch Geometric ──────────────────────────────────────────
+
 try:
     import torch
     import torch.nn as nn
     import torch.nn.functional as F
-    from torch_geometric.data import Data, DataLoader
-    from torch_geometric.nn import GINConv, global_mean_pool, global_max_pool
-    TORCH_AVAILABLE = True
-except ImportError:
-    TORCH_AVAILABLE = False
+
+    try:
+        from torch_geometric.loader import DataLoader
+    except Exception:
+        from torch_geometric.data import DataLoader
+
+    from torch_geometric.data import Batch, Data
+    from torch_geometric.nn import AttentiveFP
+
+    TORCH_GEOMETRIC_AVAILABLE = True
+except Exception:
+    torch = None
+    nn = None
+    F = None
+    DataLoader = None
+    Batch = None
+    Data = None
+    AttentiveFP = None
+    TORCH_GEOMETRIC_AVAILABLE = False
 
 try:
     from rdkit import Chem
-    from rdkit.Chem import rdmolops
+    from rdkit.Chem import AllChem
+
     RDKIT_AVAILABLE = True
-except ImportError:
+except Exception:
+    Chem = None
+    AllChem = None
     RDKIT_AVAILABLE = False
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# ATOM AND BOND FEATURE EXTRACTION
-# ─────────────────────────────────────────────────────────────────────────────
+ATOM_FEATURES = {
+    "atomic_num": list(range(1, 119)),
+    "degree": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+    "formal_charge": [-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5],
+    "hybridization": [],
+    "num_hs": [0, 1, 2, 3, 4],
+}
 
-ATOM_TYPES = ['C','N','O','S','F','Cl','Br','I','P','Si','B','Se','other']
-HYBRIDISATION = ['SP','SP2','SP3','SP3D','SP3D2','other']
-
-def atom_features(atom) -> list:
-    """
-    18-dimensional atom feature vector.
-    """
-    atom_type_one_hot = [int(atom.GetSymbol() == t) for t in ATOM_TYPES]
-    return atom_type_one_hot + [
-        atom.GetDegree() / 10.0,
-        atom.GetFormalCharge() / 4.0,
-        float(atom.GetIsAromatic()),
-        float(atom.IsInRing()),
-        atom.GetTotalNumHs() / 4.0,
-    ]   # 13 + 5 = 18 features
-
-
-def bond_features(bond) -> list:
-    """4-dimensional bond feature vector."""
-    bt = bond.GetBondTypeAsDouble()
-    return [
-        float(bt == 1.0),   # single
-        float(bt == 2.0),   # double
-        float(bt == 3.0),   # triple
-        float(bt == 1.5),   # aromatic
+if RDKIT_AVAILABLE:
+    ATOM_FEATURES["hybridization"] = [
+        Chem.rdchem.HybridizationType.SP,
+        Chem.rdchem.HybridizationType.SP2,
+        Chem.rdchem.HybridizationType.SP3,
+        Chem.rdchem.HybridizationType.SP3D,
+        Chem.rdchem.HybridizationType.SP3D2,
     ]
 
 
+def _one_hot(value, choices):
+    enc = [0] * (len(choices) + 1)
+    if value in choices:
+        enc[choices.index(value)] = 1
+    else:
+        enc[-1] = 1
+    return enc
+
+
+def atom_features(atom) -> List[float]:
+    feats = []
+    feats += _one_hot(atom.GetAtomicNum(), ATOM_FEATURES["atomic_num"])
+    feats += _one_hot(atom.GetDegree(), ATOM_FEATURES["degree"])
+    feats += _one_hot(atom.GetFormalCharge(), ATOM_FEATURES["formal_charge"])
+    feats += _one_hot(atom.GetHybridization(), ATOM_FEATURES["hybridization"])
+    feats += _one_hot(atom.GetTotalNumHs(), ATOM_FEATURES["num_hs"])
+    feats += [
+        int(atom.GetIsAromatic()),
+        int(atom.IsInRing()),
+        atom.GetMass() / 100.0,
+    ]
+    return feats
+
+
+def bond_features(bond) -> List[float]:
+    bond_type = bond.GetBondType()
+    return [
+        int(bond_type == Chem.rdchem.BondType.SINGLE),
+        int(bond_type == Chem.rdchem.BondType.DOUBLE),
+        int(bond_type == Chem.rdchem.BondType.TRIPLE),
+        int(bond_type == Chem.rdchem.BondType.AROMATIC),
+        int(bond.GetIsConjugated()),
+        int(bond.IsInRing()),
+    ]
+
+
+def _infer_dims() -> tuple[int, int]:
+    if not RDKIT_AVAILABLE:
+        return 0, 6
+    mol = Chem.MolFromSmiles("C")
+    if mol is None:
+        return 0, 6
+    atom_dim = len(atom_features(mol.GetAtomWithIdx(0)))
+    return atom_dim, 6
+
+
+ATOM_DIM, BOND_DIM = _infer_dims()
+
+
 def smiles_to_graph(smiles: str):
-    """Convert SMILES to a PyTorch Geometric Data object."""
-    if not RDKIT_AVAILABLE or not TORCH_AVAILABLE:
+    if not (TORCH_GEOMETRIC_AVAILABLE and RDKIT_AVAILABLE):
         return None
 
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
         return None
 
-    # Node features (atoms)
-    node_feats = [atom_features(a) for a in mol.GetAtoms()]
-    if not node_feats:
-        return None
-    x = torch.tensor(node_feats, dtype=torch.float)
+    mol = Chem.AddHs(mol)
+    x = torch.tensor([atom_features(a) for a in mol.GetAtoms()], dtype=torch.float)
 
-    # Edge index + edge features (bonds)
-    edge_index, edge_attr = [], []
+    edges_src: List[int] = []
+    edges_dst: List[int] = []
+    edge_attr: List[List[float]] = []
     for bond in mol.GetBonds():
         i, j = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
         bf = bond_features(bond)
-        edge_index += [[i, j], [j, i]]   # undirected
-        edge_attr += [bf, bf]
+        edges_src.extend([i, j])
+        edges_dst.extend([j, i])
+        edge_attr.extend([bf, bf])
 
-    if edge_index:
-        edge_index = torch.tensor(edge_index, dtype=torch.long).t().contiguous()
-        edge_attr = torch.tensor(edge_attr, dtype=torch.float)
-    else:
-        edge_index = torch.zeros((2, 0), dtype=torch.long)
-        edge_attr = torch.zeros((0, 4), dtype=torch.float)
+    if not edges_src:
+        return None
 
-    return Data(x=x, edge_index=edge_index, edge_attr=edge_attr)
+    edge_index = torch.tensor([edges_src, edges_dst], dtype=torch.long)
+    edge_attr_tensor = torch.tensor(edge_attr, dtype=torch.float)
+    return Data(x=x, edge_index=edge_index, edge_attr=edge_attr_tensor)  # type: ignore[operator]
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# GNN MODEL ARCHITECTURE
-# ─────────────────────────────────────────────────────────────────────────────
+def get_morgan_fp(smiles: str, radius: int = 2, nbits: int = 2048) -> Optional[np.ndarray]:
+    if not RDKIT_AVAILABLE:
+        return None
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        return None
+    fp = AllChem.GetMorganFingerprintAsBitVect(mol, radius, nBits=nbits)
+    return np.asarray(fp, dtype=np.float32)
 
-class DrugGNN(torch.nn.Module if TORCH_AVAILABLE else object):
-    """
-    Message Passing Neural Network for drug activity prediction.
-    Architecture: 3-layer GIN + global pooling + 2-layer MLP classifier
-    """
-    def __init__(self,
-                 node_features: int = 18,
-                 hidden_dim: int = 128,
-                 n_layers: int = 3,
-                 dropout: float = 0.3):
-        if not TORCH_AVAILABLE:
-            raise ImportError("PyTorch not available. Install with: pip install torch torchvision")
-        
+
+class MolecularGNN(nn.Module if TORCH_GEOMETRIC_AVAILABLE else object):
+    def __init__(
+        self,
+        in_channels: int = ATOM_DIM,
+        hidden_channels: int = 200,
+        out_channels: int = 200,
+        edge_dim: int = BOND_DIM,
+        num_layers: int = 2,
+        num_timesteps: int = 2,
+        dropout: float = 0.2,
+        task_names: Optional[List[str]] = None,
+    ):
+        if not TORCH_GEOMETRIC_AVAILABLE:
+            raise ImportError("torch-geometric and torch are required for MolecularGNN")
+
         super().__init__()
-        self.hidden_dim = hidden_dim
+        self.task_names = task_names or ["activity"]
 
-        # GIN layers (Graph Isomorphism Network — maximally expressive)
-        self.convs = torch.nn.ModuleList()
-        self.bns = torch.nn.ModuleList()
-
-        in_dim = node_features
-        for _ in range(n_layers):
-            mlp = torch.nn.Sequential(
-                torch.nn.Linear(in_dim, hidden_dim * 2),
-                torch.nn.ReLU(),
-                torch.nn.BatchNorm1d(hidden_dim * 2),
-                torch.nn.Linear(hidden_dim * 2, hidden_dim),
-            )
-            self.convs.append(GINConv(mlp, train_eps=True))
-            self.bns.append(torch.nn.BatchNorm1d(hidden_dim))
-            in_dim = hidden_dim
-
-        # Classifier MLP (mean + max pooling → 2× hidden_dim)
-        self.classifier = torch.nn.Sequential(
-            torch.nn.Linear(hidden_dim * 2, hidden_dim),
-            torch.nn.ReLU(),
-            torch.nn.Dropout(dropout),
-            torch.nn.Linear(hidden_dim, hidden_dim // 2),
-            torch.nn.ReLU(),
-            torch.nn.Dropout(dropout),
-            torch.nn.Linear(hidden_dim // 2, 1),
+        self.gnn = AttentiveFP(  # type: ignore[operator]
+            in_channels=in_channels,
+            hidden_channels=hidden_channels,
+            out_channels=out_channels,
+            edge_dim=edge_dim,
+            num_layers=num_layers,
+            num_timesteps=num_timesteps,
+            dropout=dropout,
         )
 
-        self.dropout = torch.nn.Dropout(dropout)
+        fp_dim = 2048
+        fusion_dim = out_channels + fp_dim
 
-    def forward(self, x, edge_index, batch):
-        # Message passing
-        for conv, bn in zip(self.convs, self.bns):
-            x = conv(x, edge_index)
-            x = bn(x)
-            x = torch.nn.functional.relu(x)
-            x = self.dropout(x)
+        self.fusion = nn.Sequential(
+            nn.Linear(fusion_dim, 512),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(512, 256),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+        )
 
-        # Global pooling: concat mean + max for richer graph representation
-        x_mean = global_mean_pool(x, batch)
-        x_max = global_max_pool(x, batch)
-        x = torch.cat([x_mean, x_max], dim=1)
+        self.heads = nn.ModuleDict({name: nn.Linear(256, 1) for name in self.task_names})
 
-        # Classification
-        return torch.nn.functional.sigmoid(self.classifier(x)).squeeze(-1)
+    def forward(self, data, fingerprint: Optional[object] = None) -> Dict[str, object]:
+        gnn_out = self.gnn(data.x, data.edge_index, data.edge_attr, data.batch)
 
+        if fingerprint is None:
+            fingerprint = torch.zeros(gnn_out.size(0), 2048, device=gnn_out.device)
 
-# ─────────────────────────────────────────────────────────────────────────────
-# TRAINING
-# ─────────────────────────────────────────────────────────────────────────────
+        fused = torch.cat([gnn_out, fingerprint], dim=-1)
+        h = self.fusion(fused)
+        return {name: self.heads[name](h).squeeze(-1) for name in self.task_names}
 
-def train_gnn(smiles_list: list, labels: list,
-              epochs: int = 50,
-              batch_size: int = 32,
-              learning_rate: float = 1e-3,
-              hidden_dim: int = 128) -> dict:
-    """
-    Train GNN on a list of SMILES strings.
+    def predict_with_uncertainty(
+        self,
+        data,
+        fingerprint: Optional[object] = None,
+        n_samples: int = 20,
+    ) -> Dict[str, Dict[str, List[float]]]:
+        self.train()
+        preds = {name: [] for name in self.task_names}
 
-    Args:
-        smiles_list: list of SMILES strings
-        labels: list of 0/1 labels (0=inactive, 1=active)
-        epochs: training epochs
-        batch_size: mini-batch size
-        learning_rate: Adam learning rate
-        hidden_dim: hidden layer size
-
-    Returns:
-        dict with model, metrics, training history
-    """
-    if not TORCH_AVAILABLE:
-        return {"error": "PyTorch not installed. Run: pip install torch torch_geometric"}
-    if not RDKIT_AVAILABLE:
-        return {"error": "RDKit not installed. Run: pip install rdkit-pypi"}
-
-    print("Building molecular graphs from SMILES...")
-    graphs, valid_labels = [], []
-    for smi, lbl in zip(smiles_list, labels):
-        g = smiles_to_graph(smi)
-        if g is not None:
-            g.y = torch.tensor([float(lbl)], dtype=torch.float)
-            graphs.append(g)
-            valid_labels.append(lbl)
-
-    if len(graphs) < 10:
-        return {"error": f"Only {len(graphs)} valid graphs — need at least 10"}
-
-    print(f"  Valid graphs: {len(graphs)} ({sum(valid_labels)} active, "
-          f"{len(valid_labels)-sum(valid_labels)} inactive)")
-
-    # Train/val split (80/20)
-    split = int(0.8 * len(graphs))
-    train_g = graphs[:split]
-    val_g = graphs[split:]
-
-    train_loader = DataLoader(train_g, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(val_g, batch_size=batch_size, shuffle=False)
-
-    # Model, optimizer, loss
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = DrugGNN(node_features=18, hidden_dim=hidden_dim).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-4)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5, factor=0.5)
-
-    # Class weights for imbalanced data
-    pos_rate = sum(valid_labels) / len(valid_labels)
-    pos_weight = torch.tensor([(1 - pos_rate) / max(pos_rate, 0.01)]).to(device)
-    criterion = nn.BCELoss(weight=None)
-
-    history = {"train_loss": [], "val_loss": [], "val_auc": []}
-    best_val_auc = 0
-    best_state = None
-
-    print(f"Training GNN on {device} for {epochs} epochs...")
-    for epoch in range(1, epochs + 1):
-        # Train
-        model.train()
-        total_loss = 0
-        for batch in train_loader:
-            batch = batch.to(device)
-            optimizer.zero_grad()
-            pred = model(batch.x, batch.edge_index, batch.batch)
-            loss = criterion(pred, batch.y.to(device))
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            optimizer.step()
-            total_loss += loss.item()
-
-        # Validate
-        model.eval()
-        val_preds, val_true = [], []
-        val_loss = 0
         with torch.no_grad():
-            for batch in val_loader:
-                batch = batch.to(device)
-                pred = model(batch.x, batch.edge_index, batch.batch)
-                val_loss += criterion(pred, batch.y.to(device)).item()
-                val_preds.extend(pred.cpu().numpy())
-                val_true.extend(batch.y.cpu().numpy())
+            for _ in range(max(1, n_samples)):
+                out = self.forward(data, fingerprint)
+                for name in self.task_names:
+                    preds[name].append(out[name].detach().cpu().numpy())
 
-        try:
-            from sklearn.metrics import roc_auc_score
-            auc = roc_auc_score(val_true, val_preds) if len(set(val_true)) > 1 else 0.5
-        except Exception:
-            auc = 0.5
-
-        avg_train = total_loss / len(train_loader)
-        avg_val = val_loss / max(len(val_loader), 1)
-        scheduler.step(avg_val)
-
-        history["train_loss"].append(round(avg_train, 4))
-        history["val_loss"].append(round(avg_val, 4))
-        history["val_auc"].append(round(auc, 4))
-
-        if auc > best_val_auc:
-            best_val_auc = auc
-            best_state = {k: v.clone() for k, v in model.state_dict().items()}
-
-        if epoch % 10 == 0 or epoch == epochs:
-            print(f"  Epoch {epoch:3d}: train_loss={avg_train:.4f} "
-                  f"val_loss={avg_val:.4f} val_AUC={auc:.4f}")
-
-    # Restore best model
-    if best_state:
-        model.load_state_dict(best_state)
-
-    # Save
-    torch.save({
-        "model_state_dict": model.state_dict(),
-        "model_config": {
-            "node_features": 18,
-            "hidden_dim": hidden_dim,
-            "n_layers": 3,
-        },
-        "best_val_auc": best_val_auc,
-        "trained_at": datetime.utcnow().isoformat(),
-        "n_compounds": len(graphs),
-    }, GNN_MODEL_PATH)
-
-    print(f"\nGNN saved → {GNN_MODEL_PATH}")
-    print(f"Best validation AUC: {best_val_auc:.4f}")
-
-    return {
-        "model": model,
-        "best_val_auc": round(best_val_auc, 4),
-        "n_compounds": len(graphs),
-        "history": history,
-        "trained_at": datetime.utcnow().isoformat(),
-    }
+        self.eval()
+        results: Dict[str, Dict[str, List[float]]] = {}
+        for name in self.task_names:
+            arr = np.stack(preds[name], axis=0)
+            results[name] = {
+                "mean": arr.mean(axis=0).tolist(),
+                "std": arr.std(axis=0).tolist(),
+                "lower_ci": np.percentile(arr, 10, axis=0).tolist(),
+                "upper_ci": np.percentile(arr, 90, axis=0).tolist(),
+            }
+        return results
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# INFERENCE
-# ─────────────────────────────────────────────────────────────────────────────
+class GNNInferenceService:
+    def __init__(self, model: MolecularGNN, device: str = "cpu"):
+        self.device = device
+        self.model = model.to(device)
+        self.model.eval()
 
-_gnn_model = None
+    @classmethod
+    def load(
+        cls,
+        checkpoint_path: str,
+        task_names: Optional[List[str]] = None,
+        device: str = "cpu",
+    ):
+        if not TORCH_GEOMETRIC_AVAILABLE:
+            raise ImportError("torch-geometric and torch are not installed")
 
-def load_gnn_model():
-    global _gnn_model
-    if _gnn_model is not None:
-        return _gnn_model
+        state = torch.load(checkpoint_path, map_location=device)
+        ckpt_task_names = state.get("task_names") or task_names or ["activity"]
+        model_cfg = state.get("model_config", {})
+
+        model = MolecularGNN(task_names=ckpt_task_names, **model_cfg)
+        model.load_state_dict(state["model_state_dict"])
+        return cls(model, device=device)
+
+    def _prepare_batch(self, smiles_list: List[str]):
+        graphs = []
+        fps = []
+        valid_smiles = []
+
+        for smiles in smiles_list:
+            graph = smiles_to_graph(smiles)
+            fp = get_morgan_fp(smiles)
+            if graph is None or fp is None:
+                continue
+            graphs.append(graph)
+            fps.append(fp)
+            valid_smiles.append(smiles)
+
+        if not graphs:
+            return None, None, []
+
+        batch = Batch.from_data_list(graphs).to(self.device)
+        fp_tensor = torch.tensor(np.stack(fps), dtype=torch.float, device=self.device)
+        return batch, fp_tensor, valid_smiles
+
+    def predict(self, smiles: str, uncertainty: bool = True) -> dict:
+        batch, fp_tensor, valid = self._prepare_batch([smiles])
+        if not valid:
+            return {"error": f"Invalid SMILES: {smiles}"}
+
+        if uncertainty:
+            predictions = self.model.predict_with_uncertainty(batch, fp_tensor)
+        else:
+            with torch.no_grad():
+                out = self.model(batch, fp_tensor)
+            predictions = {name: {"mean": out[name].detach().cpu().numpy().tolist()} for name in self.model.task_names}
+
+        return {"smiles": smiles, "predictions": predictions}
+
+
+_inference_service: Optional[GNNInferenceService] = None
+
+
+def load_gnn_model() -> Optional[GNNInferenceService]:
+    global _inference_service
+
+    if _inference_service is not None:
+        return _inference_service
+
+    if not TORCH_GEOMETRIC_AVAILABLE or not RDKIT_AVAILABLE:
+        return None
+
     if not os.path.exists(GNN_MODEL_PATH):
         return None
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     try:
-        checkpoint = torch.load(GNN_MODEL_PATH, map_location="cpu")
-        cfg = checkpoint["model_config"]
-        model = DrugGNN(**cfg)
-        model.load_state_dict(checkpoint["model_state_dict"])
-        model.eval()
-        _gnn_model = model
-        print(f"GNN loaded: AUC={checkpoint.get('best_val_auc','?')} "
-              f"trained on {checkpoint.get('n_compounds','?')} compounds")
-        return model
-    except Exception as e:
-        print(f"Failed to load GNN: {e}")
+        _inference_service = GNNInferenceService.load(GNN_MODEL_PATH, task_names=["activity"], device=device)
+        return _inference_service
+    except Exception as exc:
+        logger.warning("Failed loading GNN checkpoint: %s", exc)
         return None
+
+
+def _verdict_from_prob(prob: float) -> str:
+    if prob >= 0.7:
+        return "PASS"
+    if prob >= 0.4:
+        return "CAUTION"
+    return "FAIL"
 
 
 def predict_gnn(smiles: str) -> dict:
-    """
-    Run GNN prediction from a SMILES string.
-    Falls back to Random Forest if GNN unavailable.
-    """
-    if not TORCH_AVAILABLE or not RDKIT_AVAILABLE:
+    if not TORCH_GEOMETRIC_AVAILABLE or not RDKIT_AVAILABLE:
         return {
-            "error": "PyTorch or RDKit not available",
+            "error": "PyTorch Geometric or RDKit not installed",
             "fallback": True,
             "model_used": "random_forest",
         }
 
-    model = load_gnn_model()
-    if model is None:
+    service = load_gnn_model()
+    if service is None:
         return {
             "error": "GNN model not trained yet. Run train_gnn() first.",
             "fallback": True,
             "model_used": "random_forest",
         }
 
-    graph = smiles_to_graph(smiles)
-    if graph is None:
-        return {"error": f"Could not parse SMILES: {smiles}"}
+    result = service.predict(smiles, uncertainty=True)
+    if "error" in result:
+        return result
 
-    with torch.no_grad():
-        graph = graph.to("cpu")
-        batch = torch.zeros(graph.num_nodes, dtype=torch.long)
-        prob = float(model(graph.x, graph.edge_index, batch).item())
+    activity = result["predictions"]["activity"]
+    mean_prob = float(activity["mean"][0])
+    std_prob = float(activity.get("std", [0.0])[0])
+    p10 = float(activity.get("lower_ci", [mean_prob])[0])
+    p90 = float(activity.get("upper_ci", [mean_prob])[0])
 
     return {
         "smiles": smiles,
-        "gnn_probability": round(prob, 4),
-        "model_used": "gnn",
-        "model_type": "Graph Isomorphism Network (3-layer GINConv)",
-        "n_atoms": graph.num_nodes,
-        "n_bonds": graph.num_edges // 2,
+        "gnn_probability": round(mean_prob, 4),
+        "success_probability": round(mean_prob, 4),
+        "confidence_interval": {
+            "p10": round(p10, 4),
+            "p50": round(mean_prob, 4),
+            "p90": round(p90, 4),
+            "std": round(std_prob, 4),
+        },
+        "verdict": _verdict_from_prob(mean_prob),
+        "model_used": "graph_neural_network",
+        "fallback": False,
     }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# FLASK ROUTES (add to api.py)
-# ─────────────────────────────────────────────────────────────────────────────
+def train_gnn(
+    smiles_list: List[str],
+    labels,
+    epochs: int = 50,
+    batch_size: int = 32,
+    learning_rate: float = 1e-3,
+    hidden_dim: int = 200,
+) -> dict:
+    if not TORCH_GEOMETRIC_AVAILABLE:
+        return {"error": "PyTorch Geometric not installed. Run: pip install torch torch-geometric"}
+    if not RDKIT_AVAILABLE:
+        return {"error": "RDKit not installed. Run: pip install rdkit-pypi"}
 
-GNN_ROUTES = '''
-# ── ADD TO api.py ─────────────────────────────────────────────────────────────
-
-from gnn_model import predict_gnn, train_gnn, load_gnn_model, GNN_MODEL_PATH
-import os
-
-@app.route("/predict-gnn", methods=["POST"])
-def predict_with_gnn():
-    """
-    POST body: {"smiles": "CC(=O)Oc1ccccc1C(=O)O"}
-    Runs GNN model. Falls back to RF if GNN unavailable.
-    """
-    data = request.get_json()
-    smiles = data.get("smiles", "").strip()
-    if not smiles:
-        return jsonify({"error": "smiles field required"}), 400
-
-    result = predict_gnn(smiles)
-
-    # If GNN available, also run RF for comparison
-    if not result.get("fallback"):
-        from smiles_pipeline import smiles_to_descriptors
-        desc = smiles_to_descriptors(smiles)
-        if desc["validity"]["valid"] and desc["model_features"]:
-            features = [desc["model_features"][k] for k in
-                        ["toxicity","bioavailability","solubility","binding","molecular_weight"]]
-            rf_prob = models.predict_single(model, features)
-            result["rf_probability"] = round(rf_prob, 4)
-            result["ensemble_gnn_rf"] = round(
-                result["gnn_probability"] * 0.6 + rf_prob * 0.4, 4
-            )
-
-    return jsonify(result)
-
-@app.route("/gnn/status", methods=["GET"])
-def gnn_status():
-    import torch
-    if os.path.exists(GNN_MODEL_PATH):
-        checkpoint = torch.load(GNN_MODEL_PATH, map_location="cpu")
-        return jsonify({
-            "status": "trained",
-            "best_val_auc": checkpoint.get("best_val_auc"),
-            "n_compounds": checkpoint.get("n_compounds"),
-            "trained_at": checkpoint.get("trained_at"),
-        })
-    return jsonify({"status": "not_trained", 
-                    "message": "POST to /gnn/train with SMILES + labels to train"})
-
-@app.route("/gnn/train", methods=["POST"])
-def train_gnn_endpoint():
-    """
-    POST body: {"smiles_list": [...], "labels": [...], "epochs": 50}
-    Or: {"use_chembl_dataset": true} to use existing chembl_dataset.csv
-    """
-    data = request.get_json()
-    
-    if data.get("use_chembl_dataset"):
-        import pandas as pd
-        if not os.path.exists("chembl_dataset.csv"):
-            return jsonify({"error": "chembl_dataset.csv not found. Run ChEMBL import first."}), 404
-        df = pd.read_csv("chembl_dataset.csv")
-        smiles_list = df["smiles"].fillna("").tolist()
-        labels = df["label"].tolist()
+    if isinstance(labels, dict):
+        task_names = list(labels.keys())
+        label_matrix = labels
     else:
-        smiles_list = data.get("smiles_list", [])
-        labels = data.get("labels", [])
-    
-    if len(smiles_list) < 10:
-        return jsonify({"error": "Need at least 10 compounds to train GNN"}), 400
-    
-    result = train_gnn(
-        smiles_list, labels,
-        epochs = data.get("epochs", 50),
-        hidden_dim = data.get("hidden_dim", 128),
-    )
-    
-    if result.get("error"):
-        return jsonify(result), 500
-    return jsonify({
+        task_names = ["activity"]
+        label_matrix = {"activity": labels}
+
+    dataset = []
+    for i, smiles in enumerate(smiles_list):
+        graph = smiles_to_graph(smiles)
+        fp = get_morgan_fp(smiles)
+        if graph is None or fp is None:
+            continue
+
+        values = []
+        valid_row = True
+        for task in task_names:
+            task_values = label_matrix.get(task)
+            if task_values is None or i >= len(task_values):
+                valid_row = False
+                break
+            try:
+                values.append(float(task_values[i]))
+            except Exception:
+                valid_row = False
+                break
+
+        if not valid_row:
+            continue
+
+        graph.fp = torch.tensor(fp, dtype=torch.float)
+        graph.y = torch.tensor(values, dtype=torch.float)
+        dataset.append(graph)
+
+    if len(dataset) < 10:
+        return {"error": f"Only {len(dataset)} valid compounds found. Need at least 10."}
+
+    split_idx = max(1, int(0.8 * len(dataset)))
+    train_set = dataset[:split_idx]
+    val_set = dataset[split_idx:] if split_idx < len(dataset) else dataset[:1]
+
+    train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True)  # type: ignore[operator]
+    val_loader = DataLoader(val_set, batch_size=batch_size, shuffle=False)  # type: ignore[operator]
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model = MolecularGNN(task_names=task_names, hidden_channels=hidden_dim, out_channels=hidden_dim).to(device)
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-5)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=8)
+
+    best_state = None
+    best_val_loss = float("inf")
+
+    for epoch in range(epochs):
+        model.train()
+        train_loss_total = 0.0
+
+        for batch in train_loader:
+            batch = batch.to(device)
+            optimizer.zero_grad()
+            out = model(batch, batch.fp)
+            loss = 0.0
+            for idx, task in enumerate(task_names):
+                loss = loss + F.mse_loss(out[task], batch.y[:, idx])
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+            train_loss_total += float(loss.item())
+
+        model.eval()
+        val_loss_total = 0.0
+        with torch.no_grad():
+            for batch in val_loader:
+                batch = batch.to(device)
+                out = model(batch, batch.fp)
+                val_loss = 0.0
+                for idx, task in enumerate(task_names):
+                    val_loss = val_loss + F.mse_loss(out[task], batch.y[:, idx])
+                val_loss_total += float(val_loss.item())
+
+        avg_val_loss = val_loss_total / max(1, len(val_loader))
+        scheduler.step(avg_val_loss)
+
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+
+        if epoch % 10 == 0 or epoch == epochs - 1:
+            avg_train_loss = train_loss_total / max(1, len(train_loader))
+            logger.info("Epoch %d | train_loss=%.4f val_loss=%.4f", epoch, avg_train_loss, avg_val_loss)
+
+    if best_state is not None:
+        model.load_state_dict(best_state)
+
+    checkpoint = {
+        "model_state_dict": model.state_dict(),
+        "task_names": task_names,
+        "model_config": {
+            "in_channels": ATOM_DIM,
+            "hidden_channels": hidden_dim,
+            "out_channels": hidden_dim,
+            "edge_dim": BOND_DIM,
+            "num_layers": 2,
+            "num_timesteps": 2,
+            "dropout": 0.2,
+        },
+        "best_val_auc": None,
+        "best_val_loss": float(best_val_loss),
+        "n_compounds": len(dataset),
+        "trained_at": datetime.utcnow().isoformat(),
+    }
+
+    torch.save(checkpoint, GNN_MODEL_PATH)
+
+    global _inference_service
+    _inference_service = None
+
+    return {
         "status": "trained",
-        "best_val_auc": result["best_val_auc"],
-        "n_compounds": result["n_compounds"],
-        "trained_at": result["trained_at"],
-    })
-'''
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# QUICK TEST (no RDKit/PyTorch required — just tests the code path)
-# ─────────────────────────────────────────────────────────────────────────────
-
-if __name__ == "__main__":
-    print("GNN Model Status Check")
-    print("=" * 40)
-    print(f"  PyTorch available: {TORCH_AVAILABLE}")
-    print(f"  RDKit available:   {RDKIT_AVAILABLE}")
-
-    if TORCH_AVAILABLE:
-        model = DrugGNN(node_features=18, hidden_dim=64, n_layers=3)
-        n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-        print(f"  GNN parameters:    {n_params:,}")
-        print(f"  Architecture:      3× GINConv → Global Pool → MLP")
-
-    if TORCH_AVAILABLE and RDKIT_AVAILABLE:
-        test_smi = "CC(=O)Oc1ccccc1C(=O)O"   # Aspirin
-        g = smiles_to_graph(test_smi)
-        if g:
-            print(f"  Test graph (Aspirin): {g.num_nodes} atoms, {g.num_edges//2} bonds")
-        print("\nTo train: python gnn_model.py")
-        print("Or use train_gnn(smiles_list, labels) in Python")
-    else:
-        print("\nInstall dependencies:")
-        if not TORCH_AVAILABLE:
-            print("  pip install torch torch_geometric")
-        if not RDKIT_AVAILABLE:
-            print("  pip install rdkit-pypi")
+        "best_val_auc": None,
+        "best_val_loss": round(float(best_val_loss), 6),
+        "n_compounds": len(dataset),
+        "trained_at": checkpoint["trained_at"],
+    }

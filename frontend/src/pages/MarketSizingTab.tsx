@@ -1,100 +1,164 @@
-import { Card, Col, Row, Typography } from 'antd'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Card } from 'antd'
 import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts'
-import { useMarketData } from '@/hooks/useMarketData'
-import { CardSkeleton } from '@/components/skeletons/CardSkeleton'
-import { ChartSkeleton } from '@/components/skeletons/ChartSkeleton'
+import { api } from '@/services/api'
+import { DarkTooltip } from '@/components/DarkTooltip'
+import { downloadCsv, exportChartAsPng } from '@/utils/export'
 
-const colors = ['#2563EB', '#0EA5E9', '#14B8A6']
-
-function formatInr(value: number | null | undefined) {
-  if (value === null || value === undefined || Number.isNaN(value)) return 'N/A'
-  return new Intl.NumberFormat('en-IN', {
-    style: 'currency',
-    currency: 'INR',
-    maximumFractionDigits: 2,
-  }).format(value)
+const FALLBACK = {
+  global_pharma: {
+    TAM_label: '$1.48T',
+    SAM_label: '$310B',
+    SOM_label: '$4.0B',
+    cagr: 29.6,
+  },
+  therapeutic_breakdown: [
+    { area: 'Oncology', share_pct: 38, size_bn: 237, growth_pct: 11.2, color: '#00C896' },
+    { area: 'Immunology', share_pct: 18, size_bn: 112, growth_pct: 9.8, color: '#4DA6FF' },
+    { area: 'CNS', share_pct: 14, size_bn: 87, growth_pct: 7.4, color: '#7F77DD' },
+    { area: 'Cardiovascular', share_pct: 11, size_bn: 68, growth_pct: 6.1, color: '#F5A623' },
+    { area: 'Rare Disease', share_pct: 9, size_bn: 56, growth_pct: 14.3, color: '#FF6B6B' },
+    { area: 'Infectious', share_pct: 6, size_bn: 37, growth_pct: 8.9, color: '#9FE1CB' },
+    { area: 'Metabolic', share_pct: 4, size_bn: 25, growth_pct: 12.7, color: '#FAC775' },
+  ],
 }
 
-export function MarketSizingTab() {
-  const { data, chartData, loading, error, refetch } = useMarketData()
+type MarketDataShape = typeof FALLBACK
 
-  const tam = data?.market?.tam_busd
-  const sam = data?.market?.sam_busd
-  const som = data?.market?.som_busd
+export function MarketSizingTab() {
+  const [data, setData] = useState<MarketDataShape>(FALLBACK)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const chartRef = useRef<HTMLDivElement | null>(null)
+
+  const load = async () => {
+    try {
+      setLoading(true)
+      setError(null)
+      const response = await api.marketData()
+      const merged = {
+        ...FALLBACK,
+        ...(response as Partial<MarketDataShape>),
+        therapeutic_breakdown:
+          ((response as { therapeutic_breakdown?: MarketDataShape['therapeutic_breakdown'] })?.therapeutic_breakdown ||
+            FALLBACK.therapeutic_breakdown).map((item, index) => ({
+            ...item,
+            color: item.color || FALLBACK.therapeutic_breakdown[index % FALLBACK.therapeutic_breakdown.length].color,
+          })),
+      }
+      setData(merged)
+    } catch {
+      setError('Using fallback market sizing data.')
+      setData(FALLBACK)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    void load()
+  }, [])
+
+  const exportRows = useMemo(
+    () =>
+      data.therapeutic_breakdown.map((item) => ({
+        area: item.area,
+        share_pct: item.share_pct,
+        size_bn: item.size_bn,
+        growth_pct: item.growth_pct,
+      })),
+    [data.therapeutic_breakdown],
+  )
+
+  const m = data.global_pharma
 
   return (
     <section className="space-y-4">
-      <div className="flex justify-end">
-        <button type="button" className="btn-ghost" aria-label="Refresh market sizing" onClick={() => void refetch?.()}>
+      <div className="flex justify-end gap-2">
+        <button
+          type="button"
+          className="btn-ghost"
+          aria-label="Export market data CSV"
+          onClick={() => downloadCsv('market-sizing-data.csv', exportRows)}
+          disabled={loading}
+        >
+          Export CSV
+        </button>
+        <button
+          type="button"
+          className="btn-ghost"
+          aria-label="Export market chart as PNG"
+          onClick={() => void exportChartAsPng(chartRef.current, 'market-sizing-chart')}
+          disabled={loading}
+        >
+          Export PNG
+        </button>
+        <button type="button" className="btn-ghost" aria-label="Refresh market sizing" onClick={() => void load()}>
           ↻
         </button>
       </div>
       <Card>
-        <Typography.Title level={4} style={{ marginBottom: 8 }}>
+        <h2 className="font-display text-lg" style={{ marginBottom: 8 }}>
           Market Opportunity Model
-        </Typography.Title>
-        <Typography.Paragraph style={{ marginBottom: 0 }}>
-          Strategy-grade TAM/SAM/SOM sizing mapped directly from the market service feed.
-        </Typography.Paragraph>
+        </h2>
+        <p style={{ marginBottom: 0 }}>
+          Strategy-grade TAM/SAM/SOM sizing from public pharma market datasets.
+        </p>
       </Card>
 
-      {loading ? (
-        <>
-          <div className="grid md:grid-cols-3 gap-3">
-            <CardSkeleton />
-            <CardSkeleton />
-            <CardSkeleton />
+      {error ? <div className="text-sm text-ink-secondary">{error}</div> : null}
+
+      <div className="grid md:grid-cols-3 gap-3">
+        <div className="card-p">
+          <div className="text-xs uppercase tracking-[0.12em] text-ink-secondary">TAM</div>
+          <div className="text-3xl font-semibold mt-1" style={{ color: '#4DA6FF', opacity: loading ? 0.8 : 1 }}>{m.TAM_label}</div>
+        </div>
+        <div className="card-p">
+          <div className="text-xs uppercase tracking-[0.12em] text-ink-secondary">SAM</div>
+          <div className="text-3xl font-semibold mt-1" style={{ color: '#00C896', opacity: loading ? 0.8 : 1 }}>{m.SAM_label}</div>
+        </div>
+        <div className="card-p">
+          <div className="text-xs uppercase tracking-[0.12em] text-ink-secondary">SOM</div>
+          <div className="text-3xl font-semibold mt-1" style={{ color: '#F5A623', opacity: loading ? 0.8 : 1 }}>{m.SOM_label}</div>
+        </div>
+      </div>
+
+      <div className="card-p" ref={chartRef}>
+        <h3 className="font-display text-base mb-3">Therapeutic area market mix</h3>
+        <div className="grid md:grid-cols-2 gap-4 items-center">
+          <div style={{ height: 300 }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <PieChart>
+                <Pie
+                  data={data.therapeutic_breakdown}
+                  cx="50%"
+                  cy="50%"
+                  innerRadius={70}
+                  outerRadius={120}
+                  dataKey="share_pct"
+                  paddingAngle={2}
+                >
+                  {data.therapeutic_breakdown.map((item) => (
+                    <Cell key={item.area} fill={item.color} />
+                  ))}
+                </Pie>
+                <Tooltip content={<DarkTooltip formatter={(value) => `${value}%`} />} />
+              </PieChart>
+            </ResponsiveContainer>
           </div>
-          <ChartSkeleton />
-          <ChartSkeleton />
-        </>
-      ) : null}
-
-      {!loading ? (
-        <>
-          <Row gutter={[12, 12]}>
-            <Col xs={24} md={8}>
-              <Card>
-                <div className="text-xs uppercase tracking-[0.12em] text-ink-secondary">TAM</div>
-                <div className="text-2xl font-semibold mt-1">{formatInr(typeof tam === 'number' ? tam : null)}</div>
-              </Card>
-            </Col>
-            <Col xs={24} md={8}>
-              <Card>
-                <div className="text-xs uppercase tracking-[0.12em] text-ink-secondary">SAM</div>
-                <div className="text-2xl font-semibold mt-1">{formatInr(typeof sam === 'number' ? sam : null)}</div>
-              </Card>
-            </Col>
-            <Col xs={24} md={8}>
-              <Card>
-                <div className="text-xs uppercase tracking-[0.12em] text-ink-secondary">SOM</div>
-                <div className="text-2xl font-semibold mt-1">{formatInr(typeof som === 'number' ? som : null)}</div>
-              </Card>
-            </Col>
-          </Row>
-
-          <Card title="Market Mix Chart">
-            <div style={{ height: 300, width: '100%' }}>
-              {error ? (
-                <div className="h-full flex items-center justify-center text-ink-secondary">Market data is currently unavailable.</div>
-              ) : !chartData || chartData.length === 0 ? (
-                <div className="h-full flex items-center justify-center text-ink-secondary">No data available</div>
-              ) : (
-                <ResponsiveContainer width="100%" height={300}>
-                  <PieChart>
-                    <Pie data={chartData} dataKey="value" nameKey="name" outerRadius={110}>
-                      {chartData.map((entry, index) => (
-                        <Cell key={entry.name} fill={colors[index % colors.length]} />
-                      ))}
-                    </Pie>
-                    <Tooltip formatter={(value: number) => formatInr(value)} />
-                  </PieChart>
-                </ResponsiveContainer>
-              )}
-            </div>
-          </Card>
-        </>
-      ) : null}
+          <div>
+            {data.therapeutic_breakdown.map((item) => (
+              <div key={item.area} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 0', borderBottom: '1px solid rgba(0,200,150,0.06)' }}>
+                <div style={{ width: 10, height: 10, borderRadius: '50%', background: item.color, flexShrink: 0 }} />
+                <div style={{ flex: 1, fontSize: 13 }}>{item.area}</div>
+                <div style={{ fontFamily: 'IBM Plex Mono', fontSize: 13, color: '#00C896' }}>${item.size_bn}B</div>
+                <div style={{ fontFamily: 'IBM Plex Mono', fontSize: 12, color: '#F5A623' }}>+{item.growth_pct}%</div>
+                <div style={{ fontFamily: 'IBM Plex Mono', fontSize: 12, color: '#8BA89F', width: 36, textAlign: 'right' }}>{item.share_pct}%</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
     </section>
   )
 }

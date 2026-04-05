@@ -12,23 +12,24 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    open: '/app',
     proxy: {
       '^/api/(strategies|analysis|contact)(/.*)?$': {
-        target: 'http://localhost:5050',
+        target: 'http://127.0.0.1:5050',
         changeOrigin: true
       },
       '^/api/auth(/.*)?$': {
-        target: 'http://localhost:5000',
+        target: 'http://127.0.0.1:5000',
         changeOrigin: true,
         rewrite: p => p.replace(/^\/api/, '')
       },
       '^/api/.*': {
-        target: 'http://localhost:5000',
+        target: 'http://127.0.0.1:5000',
         changeOrigin: true,
         rewrite: p => p.replace(/^\/api/, '')
       },
       '/socket.io': {
-        target: 'http://localhost:5000',
+        target: 'http://127.0.0.1:5000',
         ws: true
       }
     }

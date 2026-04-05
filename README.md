@@ -65,6 +65,12 @@ Notes on optional ML dependencies:
 - Torch and torch_geometric are optional and required for GNN endpoints.
 - ANTHROPIC_API_KEY is optional and only needed for analyst endpoints.
 
+Google OAuth notes:
+
+- Backend requires `GOOGLE_CLIENT_ID` (used to verify Google ID tokens).
+- Frontend requires `VITE_GOOGLE_CLIENT_ID` (used by Google login button).
+- Use the same OAuth Web Client ID value for both variables.
+
 ## Quick Start
 
 ### Option A: Local (recommended for development)

@@ -1,7 +1,7 @@
+import { useEffect, useMemo, useState } from 'react'
 import { Card, Typography } from 'antd'
 import {
   CartesianGrid,
-  Legend,
   ResponsiveContainer,
   Scatter,
   ScatterChart,
@@ -10,18 +10,76 @@ import {
   YAxis,
   ZAxis,
 } from 'recharts'
+import { api } from '@/services/api'
 import { marketAreaColors, marketBubbles } from '@/components/strategy/novacuraData'
+import { DarkTooltip } from '@/components/DarkTooltip'
+
+type PlayerPoint = {
+  name: string
+  maturity: number
+  aiIntegration: number
+  marketCap: number
+  area: 'Oncology' | 'Rare Disease' | 'CNS' | 'Platform'
+}
 
 export function CompetitiveTab() {
+  const [points, setPoints] = useState<PlayerPoint[]>(
+    marketBubbles.map((item) => ({
+      name: item.name,
+      maturity: item.maturity,
+      aiIntegration: item.aiIntegration,
+      marketCap: item.marketCap,
+      area: item.area,
+    })),
+  )
+
+  useEffect(() => {
+    const run = async () => {
+      try {
+        const response = await api.marketData()
+        const topPlayers = (response as { top_players?: Array<Record<string, unknown>> }).top_players || []
+        if (!topPlayers.length) return
+
+        const normalized = topPlayers.map((player) => {
+          const ta = String(player.ta || 'Platform')
+          const area: PlayerPoint['area'] =
+            ta.includes('Oncology')
+              ? 'Oncology'
+              : ta.includes('CNS')
+                ? 'CNS'
+                : ta.includes('Rare')
+                  ? 'Rare Disease'
+                  : 'Platform'
+          return {
+            name: String(player.name || 'Unknown'),
+            maturity: Number(player.maturity || 0),
+            aiIntegration: Number(player.ai_level || 0),
+            marketCap: Number(player.valuation_bn || 0) * 1000,
+            area,
+          }
+        })
+
+        setPoints(normalized)
+      } catch {
+        // Keep local fallback points.
+      }
+    }
+    void run()
+  }, [])
+
   const areas = ['Oncology', 'Rare Disease', 'CNS', 'Platform'] as const
-  const byArea = areas.map((area) => ({
-    area,
-    data: marketBubbles.filter((item) => item.area === area),
-  }))
+  const byArea = useMemo(
+    () =>
+      areas.map((area) => ({
+        area,
+        data: points.filter((item) => item.area === area),
+      })),
+    [points],
+  )
 
-  const maxMarketCap = Math.max(...marketBubbles.map((item) => item.marketCap))
+  const maxMarketCap = Math.max(...points.map((item) => item.marketCap), 1)
 
-  if (!marketBubbles || marketBubbles.length === 0) {
+  if (!points || points.length === 0) {
     return <div className="card-p text-center text-ink-secondary">No data available</div>
   }
 
@@ -35,38 +93,36 @@ export function CompetitiveTab() {
       </Card>
 
       <Card title="AI Biopharma Positioning">
-        <ResponsiveContainer width="100%" height={300}>
-          <ScatterChart margin={{ top: 20, right: 20, bottom: 20, left: 20 }}>
+        <ResponsiveContainer width="100%" aspect={2}>
+          <ScatterChart margin={{ top: 20, right: 40, bottom: 40, left: 40 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.12)" />
             <XAxis
               type="number"
               dataKey="maturity"
               name="Market Maturity"
               domain={[0, 10]}
-              label={{ value: 'Market Maturity (0-10)', position: 'insideBottom', offset: -2 }}
+              tickCount={6}
+              tick={{ fill: '#8BA89F', fontSize: 11 }}
+              axisLine={false}
+              tickLine={false}
+              label={{ value: 'Market Maturity (0-10)', position: 'insideBottom', offset: -8, fill: '#506860', fontSize: 12 }}
             />
             <YAxis
               type="number"
               dataKey="aiIntegration"
               name="AI Integration"
               domain={[0, 10]}
-              label={{ value: 'AI Integration Level (0-10)', angle: -90, position: 'insideLeft' }}
+              tickCount={6}
+              tick={{ fill: '#8BA89F', fontSize: 11 }}
+              axisLine={false}
+              tickLine={false}
+              label={{ value: 'AI Integration Level', angle: -90, position: 'insideLeft', fill: '#506860', fontSize: 12 }}
             />
             <ZAxis type="number" dataKey="marketCap" range={[80, 700]} name="Market cap" />
             <Tooltip
               cursor={{ strokeDasharray: '4 4' }}
-              formatter={(value: number, name: string) => {
-                if (name === 'Market cap') return [`₹${value}M`, name]
-                return [value, name]
-              }}
-              contentStyle={{ borderRadius: 12, border: '1px solid rgba(255,255,255,0.15)' }}
-              labelFormatter={(label) => {
-                const hit = marketBubbles.find((item) => item.name === String(label))
-                if (!hit) return String(label)
-                return `${hit.name} | ₹${hit.marketCap}M | ${hit.keyDrug} | ${hit.aiApproach}`
-              }}
+              content={<DarkTooltip formatter={(value) => `${Number(value).toFixed(1)}`} />}
             />
-            <Legend />
             {byArea.map((entry) => (
               <Scatter
                 key={entry.area}
@@ -74,7 +130,7 @@ export function CompetitiveTab() {
                 data={entry.data.map((item) => ({ ...item, z: item.marketCap, fill: marketAreaColors[item.area] }))}
                 fill={marketAreaColors[entry.area]}
                 shape={(props: any) => {
-                  const isNexaClinIQ = props?.payload?.name === 'NexaClinIQ'
+                  const isNexaClinIQ = props?.payload?.name === 'NexaClinIQ' || props?.payload?.name === 'NovaCura'
                   const radius = Math.max(8, (props?.payload?.marketCap / maxMarketCap) * 26)
                   return (
                     <g>

@@ -1,6 +1,6 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
-import { LandingPage } from '@/pages/LandingPage'
 import { AppDashboard } from '@/AppDashboard'
+import { LandingPage } from '@/pages/LandingPage'
 import { LoginPage } from '@/pages/LoginPage'
 import { ProtectedRoute } from '@/components/ProtectedRoute'
 import { RoleRoute } from '@/components/RoleRoute'
@@ -20,6 +20,7 @@ export default function App() {
   return (
     <Routes>
       <Route path="/" element={<LandingPage />} />
+      <Route path="/intro" element={<LandingPage />} />
       <Route path="/login" element={<LoginRoute />} />
       <Route element={<ProtectedRoute />}>
         <Route path="/app" element={<AppDashboard />} />

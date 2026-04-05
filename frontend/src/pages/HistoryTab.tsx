@@ -27,12 +27,19 @@ export function HistoryTab() {
       }
     }
     setLoading(true)
+    const timeout = window.setTimeout(() => {
+      setLoading(false)
+      setError('No prediction history yet. Run your first prediction to see results here.')
+    }, 6000)
+
     try {
-      const data = await api.history()
+      const data = await api.history(50)
+      window.clearTimeout(timeout)
       setRows(data)
       cache.set('history-tab', data)
       setError(null)
     } catch (e: unknown) {
+      window.clearTimeout(timeout)
       const message = e instanceof Error ? e.message : 'History fetch failed'
       setRows([])
       setError(message)
@@ -42,6 +49,7 @@ export function HistoryTab() {
         navigate('/login', { replace: true })
       }
     } finally {
+      window.clearTimeout(timeout)
       setLoading(false)
     }
   }, [cache, logout, navigate])
@@ -90,8 +98,15 @@ export function HistoryTab() {
       </div>
       {error ? <div className="text-sm text-ink-secondary">{error}</div> : null}
       {loading ? <TableSkeleton rows={8} /> : null}
+      {!loading && rows.length === 0 ? (
+        <div className="text-center py-12">
+          <div style={{ fontSize: 40, marginBottom: 12 }}>DNA</div>
+          <h3 className="text-ink-primary text-base mb-1">No predictions yet</h3>
+          <p className="text-ink-secondary text-sm">Run your first compound prediction to see results here.</p>
+        </div>
+      ) : null}
       <div className="overflow-auto max-h-[420px]">
-        {!loading ? (
+        {!loading && rows.length > 0 ? (
         <table className="w-full text-sm">
           <thead className="text-ink-secondary">
             <tr>
@@ -102,13 +117,6 @@ export function HistoryTab() {
             </tr>
           </thead>
           <tbody>
-            {filtered.length === 0 ? (
-              <tr>
-                <td colSpan={4} className="py-6 text-center text-ink-secondary">
-                  No prediction history found. Run your first prediction to see results here.
-                </td>
-              </tr>
-            ) : null}
             {filtered.map((r) => (
               <tr key={r.id} className="border-t border-[rgba(0,200,150,0.08)]">
                 <td className="py-2 text-ink-secondary">{new Date(r.timestamp).toLocaleString('en-IN')}</td>

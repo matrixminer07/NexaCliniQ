@@ -25,7 +25,7 @@ from celery import Celery
 from celery.schedules import crontab
 from flask_socketio import SocketIO
 
-broker = os.environ.get("CELERY_BROKER", "redis://localhost:6379/1")
+broker = os.environ.get("CELERY_BROKER_URL") or os.environ.get("CELERY_BROKER", "redis://localhost:6379/1")
 app = Celery("novacura", broker=broker, backend=broker)
 
 init_db_schema()

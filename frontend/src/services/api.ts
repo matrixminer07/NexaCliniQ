@@ -1,8 +1,9 @@
 import axios, { AxiosError } from 'axios'
 import { message } from 'antd'
 import { z } from 'zod'
-import { clearAuthSession, getAuthToken, setAccessToken } from '@/auth'
+import { clearAuthSession, getAuthToken, getRefreshToken, setAccessToken, setRefreshToken } from '@/auth'
 import { safeGet, safePost } from '@/lib/safeApi'
+import { buildLocalPredictionResponse } from '@/utils/localPrediction'
 import type {
   CompetitiveLandscape,
   CounterfactualResponse,
@@ -172,18 +173,28 @@ const riskRegisterRuntimeSchema = z.record(z.string(), z.unknown())
 const executiveSummaryRuntimeSchema = z.record(z.string(), z.unknown())
 
 function normalizeApiBase(raw: string | undefined): string {
-  const fallback = 'http://localhost:5000/api/v1'
+  const fallback = import.meta.env.DEV ? 'http://127.0.0.1:5000/api' : '/api'
   if (!raw) return fallback
   const trimmed = raw.replace(/\/$/, '')
   if (trimmed.startsWith('/')) return trimmed
-  if (/\/api(?:\/v\d+)?(?:\/|$)/i.test(trimmed)) return trimmed
-  return `${trimmed}/api/v1`
+  if (/\/api\/v\d+(?:\/|$)/i.test(trimmed)) {
+    return trimmed.replace(/\/api\/v\d+(?=\/|$)/i, '/api')
+  }
+  if (/\/api(?:\/|$)/i.test(trimmed)) return trimmed
+  return `${trimmed}/api`
 }
 
 const apiBaseURL = normalizeApiBase(import.meta.env.VITE_API_URL as string | undefined)
+const adminBaseURL = apiBaseURL.replace(/\/api$/i, '')
 
 const client = axios.create({
   baseURL: apiBaseURL,
+  timeout: 12000,
+  withCredentials: true,
+})
+
+const adminClient = axios.create({
+  baseURL: adminBaseURL,
   timeout: 12000,
   withCredentials: true,
 })
@@ -202,6 +213,105 @@ const refreshClient = axios.create({
   withCredentials: true,
 })
 
+type TraceMeta = {
+  requestId: string
+  startedAt: number
+  requestUrl: string
+}
+
+type TraceConfig = import('axios').InternalAxiosRequestConfig & {
+  metadata?: TraceMeta
+}
+
+function createRequestId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  return `trace-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`
+}
+
+function joinUrl(base: string | undefined, path: string | undefined): string {
+  const basePart = (base ?? '').replace(/\/$/, '')
+  const pathPart = path ?? ''
+  if (!basePart) return pathPart
+  if (!pathPart) return basePart
+  if (/^https?:\/\//i.test(pathPart)) return pathPart
+  if (pathPart.startsWith('/')) return `${basePart}${pathPart}`
+  return `${basePart}/${pathPart}`
+}
+
+function extractHeaderValue(headers: unknown, key: string): string | null {
+  if (!headers || typeof headers !== 'object') {
+    return null
+  }
+  const record = headers as Record<string, unknown>
+  const lower = key.toLowerCase()
+  for (const [headerKey, value] of Object.entries(record)) {
+    if (headerKey.toLowerCase() === lower && typeof value === 'string' && value.trim()) {
+      return value
+    }
+  }
+  return null
+}
+
+function withTrace(config: import('axios').InternalAxiosRequestConfig): import('axios').InternalAxiosRequestConfig {
+  const traceConfig = config as TraceConfig
+  const requestId = createRequestId()
+  const requestUrl = joinUrl(config.baseURL, config.url)
+
+  traceConfig.headers = traceConfig.headers ?? {}
+  traceConfig.headers['X-Request-ID'] = requestId
+  traceConfig.metadata = {
+    requestId,
+    startedAt: Date.now(),
+    requestUrl,
+  }
+
+  return traceConfig
+}
+
+function logTraceSuccess(response: import('axios').AxiosResponse): void {
+  const config = response.config as TraceConfig
+  const startedAt = config.metadata?.startedAt ?? Date.now()
+  const duration = Date.now() - startedAt
+  const requestId =
+    extractHeaderValue(response.headers, 'x-request-id') ??
+    config.metadata?.requestId ??
+    extractHeaderValue(config.headers, 'x-request-id') ??
+    'unknown'
+
+  console.info('[API trace]', {
+    method: String(config.method ?? 'get').toUpperCase(),
+    url: config.metadata?.requestUrl ?? joinUrl(config.baseURL, config.url),
+    status: response.status,
+    durationMs: duration,
+    requestId,
+  })
+}
+
+function logTraceError(error: unknown): void {
+  if (!axios.isAxiosError(error)) {
+    return
+  }
+  const config = (error.config ?? {}) as TraceConfig
+  const startedAt = config.metadata?.startedAt ?? Date.now()
+  const duration = Date.now() - startedAt
+  const requestId =
+    extractHeaderValue(error.response?.headers, 'x-request-id') ??
+    config.metadata?.requestId ??
+    extractHeaderValue(config.headers, 'x-request-id') ??
+    'unknown'
+
+  console.error('[API trace]', {
+    method: String(config.method ?? 'get').toUpperCase(),
+    url: config.metadata?.requestUrl ?? joinUrl(config.baseURL, config.url),
+    status: error.response?.status ?? 'NETWORK',
+    durationMs: duration,
+    requestId,
+    message: error.message,
+  })
+}
+
 function attachAuth(config: import('axios').InternalAxiosRequestConfig) {
   const token = getAuthToken()
   if (token) {
@@ -211,8 +321,13 @@ function attachAuth(config: import('axios').InternalAxiosRequestConfig) {
   return config
 }
 
+client.interceptors.request.use(withTrace)
+nodeClient.interceptors.request.use(withTrace)
+adminClient.interceptors.request.use(withTrace)
+
 client.interceptors.request.use(attachAuth)
 nodeClient.interceptors.request.use(attachAuth)
+adminClient.interceptors.request.use(attachAuth)
 
 let refreshInFlight: Promise<string | null> | null = null
 
@@ -226,12 +341,17 @@ function shouldRedirectToLogin(pathname: string): boolean {
   return true
 }
 
+function pickAccessToken(payload: { access_token?: string; token?: string }): string {
+  return payload.access_token ?? payload.token ?? ''
+}
+
 async function attemptRefreshAccessToken(): Promise<string | null> {
   if (!refreshInFlight) {
     refreshInFlight = (async () => {
       try {
         const { data } = await refreshClient.post('/auth/refresh')
-        const token = unwrap<{ access_token?: string }>(data)?.access_token ?? null
+        const payload = unwrap<{ access_token?: string; token?: string }>(data)
+        const token = pickAccessToken(payload) || null
         setAccessToken(token)
         return token
       } catch {
@@ -275,8 +395,36 @@ async function handleAuthError(error: unknown) {
   return Promise.reject(error)
 }
 
-client.interceptors.response.use((response) => response, handleAuthError)
-nodeClient.interceptors.response.use((response) => response, handleAuthError)
+client.interceptors.response.use(
+  (response) => {
+    logTraceSuccess(response)
+    return response
+  },
+  async (error) => {
+    logTraceError(error)
+    return handleAuthError(error)
+  }
+)
+nodeClient.interceptors.response.use(
+  (response) => {
+    logTraceSuccess(response)
+    return response
+  },
+  async (error) => {
+    logTraceError(error)
+    return handleAuthError(error)
+  }
+)
+adminClient.interceptors.response.use(
+  (response) => {
+    logTraceSuccess(response)
+    return response
+  },
+  async (error) => {
+    logTraceError(error)
+    return handleAuthError(error)
+  }
+)
 
 function unwrap<T>(data: unknown): T {
   if (typeof data === 'object' && data !== null && 'data' in data) {
@@ -291,7 +439,25 @@ function unwrap<T>(data: unknown): T {
 function toErrorMessage(error: unknown): string {
   if (axios.isAxiosError(error)) {
     const axiosError = error as AxiosError<{ error?: string; message?: string }>
-    return axiosError.response?.data?.error ?? axiosError.response?.data?.message ?? axiosError.message
+    const method = String(axiosError.config?.method ?? 'get').toUpperCase()
+    const endpoint = joinUrl(axiosError.config?.baseURL, axiosError.config?.url)
+    const requestId =
+      extractHeaderValue(axiosError.response?.headers, 'x-request-id') ??
+      extractHeaderValue(axiosError.config?.headers, 'x-request-id')
+
+    if (!axiosError.response) {
+      return `Network error while calling ${method} ${endpoint}.${requestId ? ` Request ID: ${requestId}.` : ''} Verify backend availability and CORS settings.`
+    }
+
+    const serverMessage = axiosError.response?.data?.error ?? axiosError.response?.data?.message ?? axiosError.message
+    const status = axiosError.response.status
+    return `${serverMessage} (HTTP ${status} on ${method} ${endpoint}${requestId ? `, request id ${requestId}` : ''})`
+  }
+  if (error instanceof Error) {
+    return error.message || 'Request failed'
+  }
+  if (typeof error === 'string' && error.trim()) {
+    return error
   }
   return 'Unexpected request error'
 }
@@ -345,7 +511,7 @@ export const api = {
   async getGoogleOAuthState() {
     try {
       const { data } = await client.get('/auth/google/state')
-      return unwrap<{ state: string; expires_in: number }>(data)
+      return unwrap<{ configured?: boolean; state: string | null; expires_in: number }>(data)
     } catch (error) {
       throw new Error(toErrorMessage(error))
     }
@@ -368,10 +534,12 @@ export const api = {
   },
   async refreshAccessToken() {
     try {
-      const { data } = await client.post('/auth/refresh')
-      const payload = unwrap<{ access_token: string }>(data)
-      setAccessToken(payload.access_token)
-      return payload
+      const refreshToken = getRefreshToken()
+      const { data } = await client.post('/auth/refresh', refreshToken ? { refresh_token: refreshToken } : {})
+      const payload = unwrap<{ access_token?: string; token?: string }>(data)
+      const accessToken = pickAccessToken(payload)
+      setAccessToken(accessToken)
+      return { access_token: accessToken }
     } catch (error) {
       throw new Error(toErrorMessage(error))
     }
@@ -387,10 +555,15 @@ export const api = {
   async loginWithGoogle(idToken: string) {
     try {
       const oauthState = await api.getGoogleOAuthState()
+      if (oauthState.configured === false || !oauthState.state) {
+        throw new Error('Google sign-in is not configured. Please use email/password login.')
+      }
       const { data } = await client.post('/auth/google/verify', { idToken, state: oauthState.state })
-      const payload = unwrap<{ access_token: string; user: { id: string; email: string; name?: string; picture?: string; role?: 'admin' | 'researcher' | 'viewer' } }>(data)
-      setAccessToken(payload.access_token)
-      return { token: payload.access_token, user: payload.user }
+      const payload = unwrap<{ access_token?: string; token?: string; refresh_token?: string; user: { id: string; email: string; name?: string; picture?: string; role?: 'admin' | 'researcher' | 'viewer' } }>(data)
+      const token = pickAccessToken(payload)
+      setAccessToken(token)
+      setRefreshToken(payload.refresh_token ?? null)
+      return { token, user: payload.user }
     } catch (error) {
       throw new Error(toErrorMessage(error))
     }
@@ -398,23 +571,25 @@ export const api = {
   async loginWithEmail(email: string, password: string) {
     try {
       const { data } = await client.post('/auth/login', { email, password })
-      const payload = unwrap<{ access_token?: string; user?: { id: string; email: string; name?: string; picture?: string; role?: 'admin' | 'researcher' | 'viewer' }; mfa_required?: boolean; mfa_session_token?: string }>(data)
+      const payload = unwrap<{ access_token?: string; token?: string; refresh_token?: string; user?: { id: string; email: string; name?: string; picture?: string; role?: 'admin' | 'researcher' | 'viewer' }; mfa_required?: boolean; mfa_session_token?: string }>(data)
       if (payload.mfa_required) {
         return { token: '', user: { id: '', email }, mfa_required: true, mfa_session_token: payload.mfa_session_token }
       }
-      const token = payload.access_token ?? ''
+      const token = pickAccessToken(payload)
       setAccessToken(token)
+      setRefreshToken(payload.refresh_token ?? null)
       return { token, user: payload.user ?? { id: '', email } }
     } catch (error) {
       if (shouldRetryFlaskV1Auth(error)) {
         try {
           const { data } = await client.post('/v1/auth/login', { email, password })
-          const payload = unwrap<{ access_token?: string; user?: { id: string; email: string; name?: string; picture?: string; role?: 'admin' | 'researcher' | 'viewer' }; mfa_required?: boolean; mfa_session_token?: string }>(data)
+          const payload = unwrap<{ access_token?: string; token?: string; refresh_token?: string; user?: { id: string; email: string; name?: string; picture?: string; role?: 'admin' | 'researcher' | 'viewer' }; mfa_required?: boolean; mfa_session_token?: string }>(data)
           if (payload.mfa_required) {
             return { token: '', user: { id: '', email }, mfa_required: true, mfa_session_token: payload.mfa_session_token }
           }
-          const token = payload.access_token ?? ''
+          const token = pickAccessToken(payload)
           setAccessToken(token)
+          setRefreshToken(payload.refresh_token ?? null)
           return { token, user: payload.user ?? { id: '', email } }
         } catch (retryError) {
           throw new Error(toErrorMessage(retryError))
@@ -426,16 +601,20 @@ export const api = {
   async registerWithEmail(name: string, email: string, password: string) {
     try {
       const { data } = await client.post('/auth/register', { name, email, password })
-      const payload = unwrap<{ access_token: string; user: { id: string; email: string; name?: string; picture?: string; role?: 'admin' | 'researcher' | 'viewer' } }>(data)
-      setAccessToken(payload.access_token)
-      return { token: payload.access_token, user: payload.user }
+      const payload = unwrap<{ access_token?: string; token?: string; refresh_token?: string; user: { id: string; email: string; name?: string; picture?: string; role?: 'admin' | 'researcher' | 'viewer' } }>(data)
+      const token = pickAccessToken(payload)
+      setAccessToken(token)
+      setRefreshToken(payload.refresh_token ?? null)
+      return { token, user: payload.user }
     } catch (error) {
       if (shouldRetryFlaskV1Auth(error)) {
         try {
           const { data } = await client.post('/v1/auth/register', { name, email, password })
-          const payload = unwrap<{ access_token: string; user: { id: string; email: string; name?: string; picture?: string; role?: 'admin' | 'researcher' | 'viewer' } }>(data)
-          setAccessToken(payload.access_token)
-          return { token: payload.access_token, user: payload.user }
+          const payload = unwrap<{ access_token?: string; token?: string; refresh_token?: string; user: { id: string; email: string; name?: string; picture?: string; role?: 'admin' | 'researcher' | 'viewer' } }>(data)
+          const token = pickAccessToken(payload)
+          setAccessToken(token)
+          setRefreshToken(payload.refresh_token ?? null)
+          return { token, user: payload.user }
         } catch (retryError) {
           throw new Error(toErrorMessage(retryError))
         }
@@ -446,9 +625,11 @@ export const api = {
   async verifyMfaLogin(mfaSessionToken: string, code: string) {
     try {
       const { data } = await client.post('/auth/mfa/verify', { mfa_session_token: mfaSessionToken, code })
-      const payload = unwrap<{ access_token: string; user: { id: string; email: string; name?: string; picture?: string; role?: 'admin' | 'researcher' | 'viewer' } }>(data)
-      setAccessToken(payload.access_token)
-      return { token: payload.access_token, user: payload.user }
+      const payload = unwrap<{ access_token?: string; token?: string; refresh_token?: string; user: { id: string; email: string; name?: string; picture?: string; role?: 'admin' | 'researcher' | 'viewer' } }>(data)
+      const token = pickAccessToken(payload)
+      setAccessToken(token)
+      setRefreshToken(payload.refresh_token ?? null)
+      return { token, user: payload.user }
     } catch (error) {
       throw new Error(toErrorMessage(error))
     }
@@ -471,9 +652,16 @@ export const api = {
   },
   async adminSystemHealth() {
     try {
-      const { data } = await client.get('/admin/system-health')
+      const { data } = await adminClient.get('/admin/system-health')
       return unwrap<Record<string, unknown>>(data)
     } catch (error) {
+      if (axios.isAxiosError(error) && [404, 503].includes(error.response?.status ?? 0)) {
+        return {
+          status: 'degraded',
+          auth: { oauth_configured: false, allowed_origins: [] },
+          features: { database: false, active_learning: false, llm_analyst: false, gnn: false },
+        }
+      }
       throw new Error(toErrorMessage(error))
     }
   },
@@ -487,7 +675,7 @@ export const api = {
       params.search = search
     }
     try {
-      const { data } = await client.get('/admin/users', { params })
+      const { data } = await adminClient.get('/admin/users', { params })
       return unwrap<{
         items: Array<{ id: string; email: string; name: string; role: 'admin' | 'researcher' | 'viewer'; mfa_enabled?: boolean; created_at?: string; last_login?: string | null }>
         count: number
@@ -496,12 +684,15 @@ export const api = {
         total: number
       }>(data)
     } catch (error) {
+      if (axios.isAxiosError(error) && [404, 503].includes(error.response?.status ?? 0)) {
+        return { items: [], count: 0, limit, offset, total: 0 }
+      }
       throw new Error(toErrorMessage(error))
     }
   },
   async adminUpdateUserRole(userId: string, role: 'admin' | 'researcher' | 'viewer') {
     try {
-      const { data } = await client.patch(`/admin/users/${userId}/role`, { role })
+      const { data } = await adminClient.patch(`/admin/users/${userId}/role`, { role })
       return unwrap<{ id: string; email: string; name: string; role: 'admin' | 'researcher' | 'viewer' }>(data)
     } catch (error) {
       throw new Error(toErrorMessage(error))
@@ -523,7 +714,7 @@ export const api = {
       params.request_id = requestId
     }
     try {
-      const { data } = await client.get('/admin/audit-logs', { params })
+      const { data } = await adminClient.get('/admin/audit-logs', { params })
       return unwrap<{
         items: Array<{ id: string; timestamp: string; method: string; path: string; status: number; request_id?: string | null }>
         count: number
@@ -532,28 +723,53 @@ export const api = {
         total: number
       }>(data)
     } catch (error) {
+      if (axios.isAxiosError(error) && [404, 503].includes(error.response?.status ?? 0)) {
+        return { items: [], count: 0, limit, offset, total: 0 }
+      }
       throw new Error(toErrorMessage(error))
     }
   },
   async adminAnalyticsStats() {
     try {
-      const { data } = await client.get('/admin/analytics/stats')
+      const { data } = await adminClient.get('/admin/analytics/stats')
       return unwrap<AdminAnalyticsStats>(data)
     } catch (error) {
+      if (axios.isAxiosError(error) && [404, 503].includes(error.response?.status ?? 0)) {
+        return {
+          total_predictions: 0,
+          average_probability: 0,
+          pass_rate: 0,
+          verdict_breakdown: {},
+          daily_volume_7d: [],
+          total_users: 0,
+          audit_events_24h: 0,
+          audit_anomalies_24h: 0,
+          drift_alert_count_30d: 0,
+          latest_model: null,
+        }
+      }
       throw new Error(toErrorMessage(error))
     }
   },
   async adminAnalyticsModels() {
     try {
-      const { data } = await client.get('/admin/analytics/models')
+      const { data } = await adminClient.get('/admin/analytics/models')
       return unwrap<AdminModelAnalytics>(data)
     } catch (error) {
+      if (axios.isAxiosError(error) && [404, 503].includes(error.response?.status ?? 0)) {
+        return {
+          latest: {},
+          history: [],
+          drift_alerts: [],
+          summary: { versions_tracked: 0, drift_alert_count_30d: 0 },
+        }
+      }
       throw new Error(toErrorMessage(error))
     }
   },
   async adminControlsOverview() {
     try {
-      const { data } = await client.get('/admin/controls/overview')
+      const { data } = await adminClient.get('/admin/controls/overview')
       return unwrap<{
         approvals: { pending_count: number; items: AdminControlApproval[] }
         feature_flags: Record<string, { enabled: boolean; description?: string }>
@@ -565,7 +781,7 @@ export const api = {
   },
   async adminControlsApprovals(status?: string) {
     try {
-      const { data } = await client.get('/admin/controls/approvals', { params: status ? { status } : undefined })
+      const { data } = await adminClient.get('/admin/controls/approvals', { params: status ? { status } : undefined })
       return unwrap<{ items: AdminControlApproval[]; count: number }>(data)
     } catch (error) {
       throw new Error(toErrorMessage(error))
@@ -573,7 +789,7 @@ export const api = {
   },
   async adminControlsDecision(approvalId: string, decision: AdminApprovalDecision) {
     try {
-      const { data } = await client.post(`/admin/controls/approvals/${approvalId}`, { decision })
+      const { data } = await adminClient.post(`/admin/controls/approvals/${approvalId}`, { decision })
       return unwrap<AdminControlApproval>(data)
     } catch (error) {
       throw new Error(toErrorMessage(error))
@@ -581,7 +797,7 @@ export const api = {
   },
   async adminControlsFeatureFlags() {
     try {
-      const { data } = await client.get('/admin/controls/feature-flags')
+      const { data } = await adminClient.get('/admin/controls/feature-flags')
       return unwrap<{ items: AdminFeatureFlag[]; count: number }>(data)
     } catch (error) {
       throw new Error(toErrorMessage(error))
@@ -589,7 +805,7 @@ export const api = {
   },
   async adminControlsUpdateFeatureFlag(flagKey: string, payload: { enabled?: boolean; description?: string }) {
     try {
-      const { data } = await client.patch(`/admin/controls/feature-flags/${flagKey}`, payload)
+      const { data } = await adminClient.patch(`/admin/controls/feature-flags/${flagKey}`, payload)
       return unwrap<AdminFeatureFlag>(data)
     } catch (error) {
       throw new Error(toErrorMessage(error))
@@ -597,15 +813,18 @@ export const api = {
   },
   async adminControlsModels(limit = 20) {
     try {
-      const { data } = await client.get('/admin/controls/models', { params: { limit } })
+      const { data } = await adminClient.get('/admin/controls/models', { params: { limit } })
       return unwrap<{ items: Array<Record<string, unknown>>; count: number; limit: number }>(data)
     } catch (error) {
+      if (axios.isAxiosError(error) && [404, 503].includes(error.response?.status ?? 0)) {
+        return { items: [], count: 0, limit }
+      }
       throw new Error(toErrorMessage(error))
     }
   },
   async adminControlsRollback(version: string, reason: string) {
     try {
-      const { data } = await client.post('/admin/controls/models/rollback', { version, reason })
+      const { data } = await adminClient.post('/admin/controls/models/rollback', { version, reason })
       return unwrap<{ accepted: boolean; version: string; event: AdminControlApproval }>(data)
     } catch (error) {
       throw new Error(toErrorMessage(error))
@@ -616,6 +835,9 @@ export const api = {
       return await safePost('/predict', payload, predictResponseRuntimeSchema) as PredictionResponse
     } catch (error) {
       handleShapeMismatch(error)
+      if (import.meta.env.DEV) {
+        return buildLocalPredictionResponse(payload)
+      }
       throw new Error(toErrorMessage(error))
     }
   },
@@ -643,10 +865,18 @@ export const api = {
       throw new Error(toErrorMessage(error))
     }
   },
-  async history(): Promise<HistoryRecord[]> {
+  async history(limit = 50, verdict?: string): Promise<HistoryRecord[]> {
     try {
-      return await safeGet('/history', historyRuntimeSchema) as HistoryRecord[]
+      const { data } = await client.get('/history', { params: { limit, verdict } })
+      const parsed = historyRuntimeSchema.safeParse(unwrap<unknown>(data))
+      if (!parsed.success) {
+        throw new Error('Unexpected response shape from /history')
+      }
+      return parsed.data as HistoryRecord[]
     } catch (error) {
+      if (axios.isAxiosError(error) && [404, 503].includes(error.response?.status ?? 0)) {
+        return []
+      }
       handleShapeMismatch(error)
       throw new Error(toErrorMessage(error))
     }
@@ -750,6 +980,38 @@ export const api = {
   async executiveSummary() {
     try {
       return await safeGet('/strategy/executive-summary', executiveSummaryRuntimeSchema)
+    } catch (error) {
+      handleShapeMismatch(error)
+      throw new Error(toErrorMessage(error))
+    }
+  },
+  async roadmapData() {
+    try {
+      return await safeGet('/roadmap', z.record(z.string(), z.unknown()))
+    } catch (error) {
+      handleShapeMismatch(error)
+      throw new Error(toErrorMessage(error))
+    }
+  },
+  async marketData() {
+    try {
+      return await safeGet('/market-data', z.record(z.string(), z.unknown()))
+    } catch (error) {
+      handleShapeMismatch(error)
+      throw new Error(toErrorMessage(error))
+    }
+  },
+  async riskRegisterData() {
+    try {
+      return await safeGet('/risk-register', z.record(z.string(), z.unknown()))
+    } catch (error) {
+      handleShapeMismatch(error)
+      throw new Error(toErrorMessage(error))
+    }
+  },
+  async executiveSummaryData() {
+    try {
+      return await safeGet('/executive-summary', z.record(z.string(), z.unknown()))
     } catch (error) {
       handleShapeMismatch(error)
       throw new Error(toErrorMessage(error))

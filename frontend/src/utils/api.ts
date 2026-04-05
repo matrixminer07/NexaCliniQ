@@ -1,4 +1,11 @@
-const API_BASE_URL = (import.meta.env.VITE_API_URL as string) || 'http://localhost:5000';
+function normalizeApiBase(raw: string | undefined): string {
+  const fallback = 'http://127.0.0.1:5000'
+  if (!raw) return fallback
+  const trimmed = raw.replace(/\/$/, '')
+  return trimmed.includes('localhost') ? trimmed.replace('localhost', '127.0.0.1') : trimmed
+}
+
+const API_BASE_URL = normalizeApiBase(import.meta.env.VITE_API_URL as string | undefined);
 
 type ApiRequestOptions = Omit<RequestInit, 'body'> & {
   body?: unknown;

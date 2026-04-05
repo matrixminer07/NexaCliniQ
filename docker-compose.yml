@@ -33,7 +33,7 @@ services:
     networks:
       - novacura-network
     healthcheck:
-      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      test: ["CMD-SHELL", "redis-cli -a ${REDIS_PASSWORD:-password} ping | grep PONG"]
       interval: 10s
       timeout: 3s
       retries: 5
@@ -46,9 +46,13 @@ services:
     container_name: novacura-backend
     environment:
       - DATABASE_URL=${DATABASE_URL:-postgresql://pharma:password@postgres:5432/pharmanexus}
-      - CELERY_BROKER=redis://:${REDIS_PASSWORD:-redis123}@redis:6379/1
+      - CELERY_BROKER=redis://:${REDIS_PASSWORD:-password}@redis:6379/1
+      - CELERY_BROKER_URL=redis://:${REDIS_PASSWORD:-password}@redis:6379/1
+      - CELERY_RESULT_BACKEND=redis://:${REDIS_PASSWORD:-password}@redis:6379/1
       - REDIS_URL=${REDIS_URL:-redis://:${REDIS_PASSWORD:-password}@redis:6379/0}
       - SOCKETIO_MESSAGE_QUEUE=${SOCKETIO_MESSAGE_QUEUE:-redis://:${REDIS_PASSWORD:-password}@redis:6379/0}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
+      - AUTH_ADMIN_EMAILS=${AUTH_ADMIN_EMAILS:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - SECRET_KEY=${SECRET_KEY:-replace-with-32-char-min-secret-key}
     volumes:
@@ -104,7 +108,7 @@ services:
     image: dpage/pgadmin4:latest
     container_name: novacura-pgadmin
     environment:
-      - PGADMIN_DEFAULT_EMAIL=admin@pharmanexus.local
+      - PGADMIN_DEFAULT_EMAIL=admin@pharmanexus.com
       - PGADMIN_DEFAULT_PASSWORD=admin123
       - PGADMIN_CONFIG_SERVER_MODE=False
     ports:
@@ -147,14 +151,18 @@ services:
       context: .
       dockerfile: docker/Dockerfile.backend
     container_name: novacura-celery
-    command: celery -A celery_worker worker --loglevel=info --concurrency=4
+    command: celery -A celery_app worker --loglevel=info --concurrency=4
     environment:
       - DATABASE_URL=${DATABASE_URL:-postgresql://pharma:password@postgres:5432/pharmanexus}
-      - CELERY_BROKER=redis://:${REDIS_PASSWORD:-redis123}@redis:6379/1
+      - CELERY_BROKER=redis://:${REDIS_PASSWORD:-password}@redis:6379/1
+      - CELERY_BROKER_URL=redis://:${REDIS_PASSWORD:-password}@redis:6379/1
+      - CELERY_RESULT_BACKEND=redis://:${REDIS_PASSWORD:-password}@redis:6379/1
       - REDIS_URL=${REDIS_URL:-redis://:${REDIS_PASSWORD:-password}@redis:6379/0}
       - SOCKETIO_MESSAGE_QUEUE=${SOCKETIO_MESSAGE_QUEUE:-redis://:${REDIS_PASSWORD:-password}@redis:6379/0}
     volumes:
       - ./backend:/app
+    healthcheck:
+      disable: true
     depends_on:
       - postgres
       - redis
@@ -168,13 +176,15 @@ services:
       context: .
       dockerfile: docker/Dockerfile.backend
     container_name: novacura-celery-beat
-    command: celery -A celery_worker beat --loglevel=info
+    command: celery -A celery_app beat --loglevel=info
     environment:
       - DATABASE_URL=${DATABASE_URL:-postgresql://pharma:password@postgres:5432/pharmanexus}
       - CELERY_BROKER=redis://:${REDIS_PASSWORD:-redis123}@redis:6379/1
       - REDIS_URL=${REDIS_URL:-redis://:${REDIS_PASSWORD:-password}@redis:6379/0}
     volumes:
       - ./backend:/app
+    healthcheck:
+      disable: true
     depends_on:
       - postgres
       - redis
@@ -188,9 +198,15 @@ services:
       context: .
       dockerfile: docker/Dockerfile.backend
     container_name: novacura-flower
-    command: celery -A celery_worker flower --port=5555 --basic_auth=${FLOWER_USER:-admin}:${FLOWER_PASSWORD:-flower123}
+    command: celery -A celery_app flower --port=5555 --basic_auth=${FLOWER_USER:-admin}:${FLOWER_PASSWORD:-flower123}
     environment:
-      - CELERY_BROKER=redis://:${REDIS_PASSWORD:-redis123}@redis:6379/1
+      - CELERY_BROKER=redis://:${REDIS_PASSWORD:-password}@redis:6379/1
+      - CELERY_BROKER_URL=redis://:${REDIS_PASSWORD:-password}@redis:6379/1
+      - CELERY_RESULT_BACKEND=redis://:${REDIS_PASSWORD:-password}@redis:6379/1
+    volumes:
+      - ./backend:/app
+    healthcheck:
+      disable: true
     ports:
       - "5555:5555"
     depends_on:
@@ -226,7 +242,6 @@ services:
       - grafana_data:/var/lib/grafana
       - ./monitoring/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
       - ./monitoring/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
-      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards/json:ro
       - ./monitoring/grafana/dashboards/nexuscliniq.json:/var/lib/grafana/dashboards/nexuscliniq.json:ro
     ports:
       - "3000:3000"
@@ -254,7 +269,7 @@ services:
       - novacura-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health"]
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1/health"]
       interval: 30s
       timeout: 10s
       retries: 3

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { Card } from 'antd'
 import {
   Line,
@@ -11,8 +11,12 @@ import {
   Legend,
 } from 'recharts'
 import { defaultRoiInputs, roiCalculator } from '@/components/strategy/novacuraData'
+import { formatMillions } from '@/utils/numberFormat'
+import { downloadCsv, exportChartAsPng } from '@/utils/export'
+import { DarkTooltip } from '@/components/DarkTooltip'
 
 export function FinancialTab() {
+  const chartRef = useRef<HTMLDivElement | null>(null)
   const [allocations, setAllocations] = useState({
     strategyA: defaultRoiInputs.strategyA,
     strategyB: defaultRoiInputs.strategyB,
@@ -66,67 +70,96 @@ export function FinancialTab() {
 
   const remaining = totalBudget - (allocations.strategyA + allocations.strategyB + allocations.strategyC)
   const hasChartData = result.points && result.points.length > 0
+  const exportRows = (result.points || []).map((point) => ({
+    year: point.year,
+    strategy_a_million: Number(point.strategyA.toFixed(2)),
+    strategy_b_million: Number(point.strategyB.toFixed(2)),
+    strategy_c_million: Number(point.strategyC.toFixed(2)),
+    total_million: Number(point.total.toFixed(2)),
+  }))
 
   return (
     <section className="space-y-4">
       <Card>
         <h2 className="font-display text-lg mb-1">Budget / ROI Simulator</h2>
         <p className="text-sm text-ink-secondary mb-4">
-          Allocate exactly ₹500M across the three strategies and project cumulative 5-year returns.
+          Allocate exactly $500 million across the three strategies and project cumulative 5-year returns.
         </p>
         <div className="grid md:grid-cols-3 gap-4">
           <div>
             <div className="label">Strategy A allocation</div>
             <input type="range" min={0} max={500} step={5} value={allocations.strategyA} onChange={(e) => setAllocation('strategyA', Number(e.target.value))} />
-            <div className="text-xs font-mono text-ink-secondary">₹{allocations.strategyA}M</div>
+            <div className="text-xs font-mono text-ink-secondary">{formatMillions(allocations.strategyA, 0)}</div>
           </div>
           <div>
             <div className="label">Strategy B allocation</div>
             <input type="range" min={0} max={500} step={5} value={allocations.strategyB} onChange={(e) => setAllocation('strategyB', Number(e.target.value))} />
-            <div className="text-xs font-mono text-ink-secondary">₹{allocations.strategyB}M</div>
+            <div className="text-xs font-mono text-ink-secondary">{formatMillions(allocations.strategyB, 0)}</div>
           </div>
           <div>
             <div className="label">Strategy C allocation</div>
             <input type="range" min={0} max={500} step={5} value={allocations.strategyC} onChange={(e) => setAllocation('strategyC', Number(e.target.value))} />
-            <div className="text-xs font-mono text-ink-secondary">₹{allocations.strategyC}M</div>
+            <div className="text-xs font-mono text-ink-secondary">{formatMillions(allocations.strategyC, 0)}</div>
           </div>
         </div>
         <div className="mt-3 text-sm text-ink-secondary">
-          Total allocated: <span className="font-semibold text-ink-primary">₹{result.totalInvested.toFixed(0)}M</span>
+          Total allocated: <span className="font-semibold text-ink-primary">{formatMillions(result.totalInvested, 0)}</span>
           {' • '}
-          Unallocated: <span className="font-semibold text-ink-primary">₹{remaining}M</span>
+          Unallocated: <span className="font-semibold text-ink-primary">{formatMillions(remaining, 0)}</span>
         </div>
       </Card>
 
       <Card>
-        <h3 className="font-display text-base mb-3">5-Year Cumulative Return Projection</h3>
+        <div className="mb-3 flex items-center justify-between gap-2">
+          <h3 className="font-display text-base">5-Year Cumulative Return Projection</h3>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              className="btn-ghost"
+              onClick={() => downloadCsv('budget-return-projection.csv', exportRows)}
+              disabled={!hasChartData}
+            >
+              Export CSV
+            </button>
+            <button
+              type="button"
+              className="btn-ghost"
+              onClick={() => void exportChartAsPng(chartRef.current, 'budget-return-projection')}
+              disabled={!hasChartData}
+            >
+              Export PNG
+            </button>
+          </div>
+        </div>
         {!hasChartData ? (
           <div className="h-[300px] flex items-center justify-center text-ink-secondary">No data available</div>
         ) : (
-        <ResponsiveContainer width="100%" height={300}>
-          <LineChart data={result.points} margin={{ top: 10, right: 20, left: 8, bottom: 8 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.12)" />
-            <XAxis dataKey="year" label={{ value: 'Year', position: 'insideBottom', offset: -2 }} stroke="var(--ink-secondary)" />
-            <YAxis label={{ value: 'Cumulative Return (₹M)', angle: -90, position: 'insideLeft' }} stroke="var(--ink-secondary)" />
-            <Tooltip formatter={(value: number) => `₹${Number(value).toFixed(1)}M`} />
-            <Legend verticalAlign="top" height={28} />
-            <Line type="monotone" dataKey="strategyA" name="Strategy A" stroke="#22c55e" strokeWidth={2} dot />
-            <Line type="monotone" dataKey="strategyB" name="Strategy B" stroke="#f59e0b" strokeWidth={2} dot />
-            <Line type="monotone" dataKey="strategyC" name="Strategy C" stroke="#3b82f6" strokeWidth={2} dot />
-            <Line type="monotone" dataKey="total" name="Total" stroke="#a78bfa" strokeWidth={3} dot={false} />
-          </LineChart>
-        </ResponsiveContainer>
+        <div ref={chartRef}>
+          <ResponsiveContainer width="100%" height={300}>
+            <LineChart data={result.points} margin={{ top: 10, right: 20, left: 8, bottom: 8 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.12)" />
+              <XAxis dataKey="year" label={{ value: 'Year', position: 'insideBottom', offset: -2 }} stroke="var(--ink-secondary)" />
+              <YAxis label={{ value: 'Cumulative Return (Million)', angle: -90, position: 'insideLeft' }} stroke="var(--ink-secondary)" />
+              <Tooltip content={<DarkTooltip currency="$" suffix="M" formatter={(value) => Number(value).toFixed(1)} />} />
+              <Legend verticalAlign="top" height={28} />
+              <Line type="monotone" dataKey="strategyA" name="Strategy A" stroke="#22c55e" strokeWidth={2} dot />
+              <Line type="monotone" dataKey="strategyB" name="Strategy B" stroke="#f59e0b" strokeWidth={2} dot />
+              <Line type="monotone" dataKey="strategyC" name="Strategy C" stroke="#3b82f6" strokeWidth={2} dot />
+              <Line type="monotone" dataKey="total" name="Total" stroke="#a78bfa" strokeWidth={3} dot={false} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
         )}
       </Card>
 
       <div className="grid sm:grid-cols-3 gap-3">
         <div className="card-p">
           <div className="text-ink-secondary text-sm">Total Invested</div>
-          <div className="text-2xl font-semibold mt-1">₹{result.totalInvested.toFixed(0)}M</div>
+          <div className="text-2xl font-semibold mt-1">{formatMillions(result.totalInvested, 0)}</div>
         </div>
         <div className="card-p">
           <div className="text-ink-secondary text-sm">Projected 5Y Return</div>
-          <div className="text-2xl font-semibold mt-1">₹{result.projectedFiveYearReturn.toFixed(1)}M</div>
+          <div className="text-2xl font-semibold mt-1">{formatMillions(result.projectedFiveYearReturn)}</div>
         </div>
         <div className="card-p">
           <div className="text-ink-secondary text-sm">IRR Estimate</div>

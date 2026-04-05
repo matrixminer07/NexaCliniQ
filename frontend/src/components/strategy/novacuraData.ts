@@ -16,9 +16,9 @@ export const strategyHeaders = {
 export const strategyMetricRows: StrategyMetricRow[] = [
   {
     metric: 'Cost',
-    strategyA: { label: '₹230M', score: 8.7, tone: 'green' },
-    strategyB: { label: '₹360M', score: 6.4, tone: 'yellow' },
-    strategyC: { label: '₹120M', score: 7.1, tone: 'yellow' },
+    strategyA: { label: '$230M', score: 8.7, tone: 'green' },
+    strategyB: { label: '$360M', score: 6.4, tone: 'yellow' },
+    strategyC: { label: '$120M', score: 7.1, tone: 'yellow' },
   },
   {
     metric: 'Timeline',

@@ -38,6 +38,7 @@ export function LoginPage() {
   const [mfaSessionToken, setMfaSessionToken] = useState<string | null>(null)
   const [mfaCode, setMfaCode] = useState('')
   const [mfaEmail, setMfaEmail] = useState('')
+  const [googleLoginAvailable, setGoogleLoginAvailable] = useState(false)
   const [formData, setFormData] = useState<FormState>({
     email: '',
     password: '',
@@ -57,6 +58,30 @@ export function LoginPage() {
       navigate(redirectPath, { replace: true })
     }
   }, [authLoading, isAuthenticated, locationState, navigate, redirectPath])
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function checkGoogleAvailability() {
+      if (!googleOAuthConfigured) {
+        if (!cancelled) setGoogleLoginAvailable(false)
+        return
+      }
+
+      try {
+        const state = await api.getGoogleOAuthState()
+        if (!cancelled) setGoogleLoginAvailable(state.configured !== false && Boolean(state.state))
+      } catch {
+        if (!cancelled) setGoogleLoginAvailable(false)
+      }
+    }
+
+    void checkGoogleAvailability()
+
+    return () => {
+      cancelled = true
+    }
+  }, [googleOAuthConfigured])
 
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -306,7 +331,7 @@ export function LoginPage() {
               <>
             {/* Google Button */}
             <div className="mb-6 flex justify-center">
-              {googleOAuthConfigured ? (
+              {googleLoginAvailable ? (
                 <GoogleLogin
                   onSuccess={handleGoogleSuccess}
                   onError={() => setError('Google authentication failed')}
@@ -319,7 +344,7 @@ export function LoginPage() {
               ) : (
                 <div className="w-full p-3 bg-amber-500/20 border border-amber-400/50 rounded-lg backdrop-blur">
                   <p className="text-amber-100 text-sm">
-                    Google sign-in is not configured. Set VITE_GOOGLE_CLIENT_ID in frontend/.env.
+                    Google sign-in is not configured. Use email/password sign-in.
                   </p>
                 </div>
               )}

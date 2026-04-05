@@ -7,7 +7,8 @@ from pathlib import Path
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.calibration import CalibratedClassifierCV
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import StratifiedKFold, train_test_split
+from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, roc_auc_score
 
 try:
     from xgboost import XGBClassifier  # pyright: ignore[reportMissingImports]
@@ -24,6 +25,97 @@ MODEL_PATH = os.path.join(BASE_DIR, "model.joblib")
 ENSEMBLE_PATH = os.path.join(BASE_DIR, "ensemble.joblib")
 ENSEMBLE_DIR = os.path.join(BASE_DIR, "ensemble")
 FEATURE_NAMES = ["toxicity", "bioavailability", "solubility", "binding", "molecular_weight"]
+MODEL_VERSION = "synthetic_v2"
+SYNTHETIC_DATASET_PROFILES = [
+    ("balanced_screening", 340),
+    ("lead_optimized", 520),
+    ("high_risk", 340),
+    ("noisy_screening", 300),
+]
+
+
+def _generate_synthetic_dataset(profile_name: str, n_samples: int, seed_offset: int) -> tuple[np.ndarray, np.ndarray, dict[str, float]]:
+    rng = np.random.default_rng(42 + seed_offset)
+
+    if profile_name == "lead_optimized":
+        toxicity = rng.beta(1.6, 4.8, n_samples)
+        bioavailability = rng.beta(4.6, 1.7, n_samples)
+        solubility = rng.beta(3.8, 1.8, n_samples)
+        binding = rng.beta(4.3, 1.6, n_samples)
+        molecular_weight = rng.beta(2.1, 2.6, n_samples)
+        bias = 0.18
+        noise = 0.05
+        threshold = 0.48
+    elif profile_name == "high_risk":
+        toxicity = rng.beta(4.9, 1.7, n_samples)
+        bioavailability = rng.beta(1.9, 4.1, n_samples)
+        solubility = rng.beta(1.8, 4.2, n_samples)
+        binding = rng.beta(2.0, 3.8, n_samples)
+        molecular_weight = rng.beta(3.6, 2.0, n_samples)
+        bias = -0.24
+        noise = 0.07
+        threshold = 0.54
+    elif profile_name == "noisy_screening":
+        toxicity = rng.beta(2.3, 2.3, n_samples)
+        bioavailability = rng.beta(2.6, 2.4, n_samples)
+        solubility = rng.beta(2.5, 2.5, n_samples)
+        binding = rng.beta(2.4, 2.6, n_samples)
+        molecular_weight = rng.beta(2.8, 2.2, n_samples)
+        bias = 0.02
+        noise = 0.14
+        threshold = 0.50
+    else:
+        toxicity = rng.beta(2.2, 3.4, n_samples)
+        bioavailability = rng.beta(2.7, 2.0, n_samples)
+        solubility = rng.beta(2.4, 2.2, n_samples)
+        binding = rng.beta(2.8, 1.9, n_samples)
+        molecular_weight = rng.beta(2.5, 2.3, n_samples)
+        bias = 0.04
+        noise = 0.08
+        threshold = 0.50
+
+    score = (
+        (bioavailability * 0.34)
+        + (binding * 0.31)
+        + (solubility * 0.22)
+        + ((1 - molecular_weight) * 0.12)
+        - (toxicity * 0.43)
+        + (bioavailability * binding * 0.08)
+        - (toxicity * solubility * 0.05)
+        + bias
+    )
+    score += rng.normal(0, noise, n_samples)
+    success = (score > threshold).astype(int)
+
+    X = np.column_stack((toxicity, bioavailability, solubility, binding, molecular_weight))
+    summary = {
+        "Dataset": profile_name.replace("_", " ").title(),
+        "Samples": int(n_samples),
+        "Success Rate": float(success.mean()),
+        "Avg Toxicity": float(np.mean(toxicity)),
+        "Avg Bioavailability": float(np.mean(bioavailability)),
+        "Avg Solubility": float(np.mean(solubility)),
+        "Avg Binding": float(np.mean(binding)),
+        "Avg Molecular Weight": float(np.mean(molecular_weight)),
+    }
+    return X, success, summary
+
+
+def _build_synthetic_training_data() -> tuple[np.ndarray, np.ndarray, list[dict[str, float]]]:
+    features = []
+    labels = []
+    summaries = []
+
+    for seed_offset, (profile_name, n_samples) in enumerate(SYNTHETIC_DATASET_PROFILES):
+        X_part, y_part, summary = _generate_synthetic_dataset(profile_name, n_samples, seed_offset)
+        features.append(X_part)
+        labels.append(y_part)
+        summaries.append(summary)
+
+    X = np.vstack(features)
+    y = np.concatenate(labels)
+    order = np.random.default_rng(42).permutation(len(X))
+    return X[order], y[order], summaries
 
 
 def _extract_features(data, strict: bool = False):
@@ -52,33 +144,61 @@ def _extract_features(data, strict: bool = False):
 
 # ---- Model Training ----
 def train_model():
-    np.random.seed(42)
-    n_samples = 300
-    toxicity = np.random.rand(n_samples)
-    bioavailability = np.random.rand(n_samples)
-    solubility = np.random.rand(n_samples)
-    binding = np.random.rand(n_samples)
-    molecular_weight = np.random.rand(n_samples)
-    success = (
-        (bioavailability * 0.3 +
-         binding * 0.3 +
-         solubility * 0.2 -
-         toxicity * 0.4) > 0.35
-    ).astype(int)
-    X = np.column_stack((toxicity, bioavailability, solubility, binding, molecular_weight))
-    y = success
-    model = RandomForestClassifier(n_estimators=100, random_state=42)
-    model.fit(X, y)
-    
+    X, y, dataset_summaries = _build_synthetic_training_data()
+    X_train, X_test, y_train, y_test = train_test_split(
+        X,
+        y,
+        test_size=0.25,
+        random_state=42,
+        stratify=y,
+    )
+
+    model = RandomForestClassifier(
+        n_estimators=300,
+        max_depth=14,
+        min_samples_leaf=2,
+        class_weight="balanced_subsample",
+        random_state=42,
+        n_jobs=-1,
+    )
+    model.fit(X_train, y_train)
+
+    test_prob = model.predict_proba(X_test)[:, 1]
+    test_pred = (test_prob >= 0.5).astype(int)
+    metrics = {
+        "train_accuracy": float(accuracy_score(y_train, model.predict(X_train))),
+        "test_accuracy": float(accuracy_score(y_test, test_pred)),
+        "test_auc": float(roc_auc_score(y_test, test_prob)) if len(np.unique(y_test)) > 1 else 0.0,
+        "test_precision": float(precision_score(y_test, test_pred, zero_division=0)),
+        "test_recall": float(recall_score(y_test, test_pred, zero_division=0)),
+        "test_f1": float(f1_score(y_test, test_pred, zero_division=0)),
+        "n_train": int(len(X_train)),
+        "n_test": int(len(X_test)),
+        "n_total": int(len(X)),
+        "pos_rate": float(np.mean(y)),
+    }
+
+    model.model_version = MODEL_VERSION
+    model.training_summary_ = {
+        "model_version": MODEL_VERSION,
+        "dataset_summaries": dataset_summaries,
+        **metrics,
+    }
+
     # Save the trained model
     joblib.dump(model, MODEL_PATH)
     return model
 
 # ---- Load Model ----
 def load_model():
-    if not os.path.exists(MODEL_PATH):
-        return train_model()
-    return joblib.load(MODEL_PATH)
+    if os.path.exists(MODEL_PATH):
+        try:
+            model = joblib.load(MODEL_PATH)
+            if getattr(model, "model_version", None) == MODEL_VERSION:
+                return model
+        except Exception:
+            logging.warning("Existing model checkpoint could not be loaded; retraining synthetic model.")
+    return train_model()
 
 # ---- Single Prediction ----
 def predict_single(model, features):
@@ -171,16 +291,7 @@ def get_phase_probabilities(base_prob: float) -> dict:
 # ---- NEW BOARDROOM FEATURES ----
 
 def _default_training_data():
-    np.random.seed(42)
-    n = 400
-    X = np.column_stack([
-        np.random.rand(n),
-        np.random.rand(n),
-        np.random.rand(n),
-        np.random.rand(n),
-        np.random.rand(n),
-    ])
-    y = ((X[:, 1] * 0.3 + X[:, 3] * 0.3 + X[:, 2] * 0.2 - X[:, 0] * 0.4) > 0.35).astype(int)
+    X, y, _ = _build_synthetic_training_data()
     return X, y
 
 
